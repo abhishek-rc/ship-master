@@ -2,6 +2,28 @@
 
 Quick reference for setting up your system as Master.
 
+## 🌐 Network Requirements
+
+**Do master and replica need to be on the same WiFi?**
+
+**Answer:**
+- ✅ **Same WiFi (Easiest):** Works perfectly, no extra configuration needed
+- ✅ **Different Networks (Internet):** Also works! Use public IP, ngrok, or cloud hosting
+- ✅ **Production:** Ships connect over internet (not same network)
+
+**Options:**
+1. **🌐 ngrok (RECOMMENDED for Testing with Friend Far Away)** - Easiest way to test over internet
+2. **Same WiFi** - Easiest for local testing
+3. **Internet with Public IP** - Master has public IP, ships connect over internet
+4. **Cloud Hosting** - Deploy Kafka on cloud, ships connect over internet
+
+**💡 Quick Recommendation:**
+- **Testing with friend far away?** → Use **ngrok** (Option A below) - No router config needed!
+- **Testing on same WiFi?** → Use **Same WiFi** (Option B below) - Simple local IP
+- **Production deployment?** → See **[PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md)**
+
+**⚠️ For Production Deployment:** See **[PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md)** for deploying with ships connecting over the internet.
+
 ---
 
 ## 🏗️ Architecture Overview
@@ -95,38 +117,95 @@ Replica Logs:
 
 ## 🔧 Quick Setup Steps
 
-### 1. Find Your IP Address
-```powershell
-ipconfig
-# Look for IPv4 Address (e.g., 192.168.1.100)
-# Use the IP address from your local network adapter (not 127.0.0.1)
-```
+### Option A: Using ngrok (Recommended for Testing with Friend Far Away)
 
-### 2. Update docker-compose.yml
+**Best for:** Testing when friend is in different location (not same WiFi)
 
-**IMPORTANT:** Your Kafka runs in Docker and needs to be accessible from outside your machine.
+**Steps:**
 
-Change line 23 from:
-```yaml
-KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-```
+1. **Install ngrok:**
+   - Download from: https://ngrok.com/download
+   - Or use: `choco install ngrok` (if you have Chocolatey)
 
-To (replace `192.168.1.100` with YOUR actual IP address):
-```yaml
-KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://192.168.29.12:9092
-```
+2. **Sign up for free ngrok account:**
+   - Go to: https://dashboard.ngrok.com/signup
+   - Get your authtoken from dashboard
 
-**Why?** This tells Kafka to advertise itself using your IP address so external clients (your friend's replica) can connect to it.
+3. **Configure ngrok:**
+   ```powershell
+   ngrok config add-authtoken <YOUR_AUTHTOKEN>
+   ```
 
-### 3. Open Windows Firewall
-```powershell
-# Run PowerShell as Administrator
-New-NetFirewallRule -DisplayName "Kafka" -Direction Inbound -LocalPort 9092 -Protocol TCP -Action Allow
-```
+4. **Start Kafka in Docker:**
+   ```powershell
+   docker-compose up -d kafka
+   ```
 
-**Note:** This allows external connections to port 9092 where Kafka is listening.
+5. **Start ngrok tunnel:**
+   ```powershell
+   ngrok tcp 9092
+   ```
 
-### 4. Start/Restart Kafka in Docker
+6. **Copy the ngrok URL:**
+   You'll see output like:
+   ```
+   Forwarding   tcp://0.tcp.ngrok.io:12345 -> localhost:9092
+   ```
+   
+   Copy the URL: `0.tcp.ngrok.io:12345` (your port number will be different)
+
+7. **Update docker-compose.yml:**
+   ```yaml
+   KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://0.tcp.ngrok.io:12345
+   ```
+   (Replace `0.tcp.ngrok.io:12345` with YOUR ngrok URL)
+
+8. **Restart Kafka:**
+   ```powershell
+   docker-compose down
+   docker-compose up -d kafka
+   ```
+
+9. **Keep ngrok running:**
+   - Keep the ngrok terminal window open
+   - If you close it, the tunnel stops and URL changes
+
+10. **Share with friend:**
+    ```
+    KAFKA_BROKERS=0.tcp.ngrok.io:12345
+    ```
+
+**⚠️ Important Notes:**
+- ngrok URL changes each time you restart it (unless paid plan)
+- Keep ngrok terminal open while testing
+- If URL changes, update `docker-compose.yml` and restart Kafka
+
+---
+
+### Option B: Same WiFi Network (Local Testing)
+
+**Best for:** Testing when friend is on same WiFi network
+
+1. **Find Your IP Address:**
+   ```powershell
+   ipconfig
+   # Look for IPv4 Address (e.g., 192.168.1.100)
+   # Use the IP address from your local network adapter (not 127.0.0.1)
+   ```
+
+2. **Update docker-compose.yml:**
+   ```yaml
+   KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://192.168.29.12:9092
+   ```
+   (Replace with YOUR local IP address)
+
+3. **Open Windows Firewall:**
+   ```powershell
+   # Run PowerShell as Administrator
+   New-NetFirewallRule -DisplayName "Kafka" -Direction Inbound -LocalPort 9092 -Protocol TCP -Action Allow
+   ```
+
+4. **Start/Restart Kafka in Docker:**
 ```powershell
 # Stop Kafka if running
 docker-compose down
@@ -152,7 +231,7 @@ services:
     # ... other config
 ```
 
-### 5. Master .env Configuration
+### 5. Master .env Configuration (Same for Both Options)
 
 ```env
 # Offline Sync - Master Mode
@@ -203,13 +282,23 @@ You should see:
 
 **IMPORTANT:** Your friend does NOT need to install or run Kafka. They will connect to YOUR Kafka running in Docker.
 
-Share these details with your friend:
+### If Using ngrok:
 
-1. **Your IP Address**: `192.168.1.100` (example - use your actual IP from `ipconfig`)
-2. **Kafka Port**: `9092` (already exposed from Docker)
-3. **Ship ID**: `ship-001` (or let them choose a unique one)
+Share these details:
+```
+Hi! Here's what you need to connect:
 
-**Example message to send:**
+- Kafka URL: 0.tcp.ngrok.io:12345
+  (Use this EXACTLY in your .env: KAFKA_BROKERS=0.tcp.ngrok.io:12345)
+- Your Ship ID: ship-001
+
+You don't need to install Kafka - just connect to mine!
+Use the REPLICA_SETUP_GUIDE.md I shared with you.
+```
+
+### If Using Same WiFi:
+
+Share these details:
 ```
 Hi! Here's what you need to connect:
 
@@ -228,25 +317,32 @@ Use the REPLICA_SETUP_GUIDE.md I shared with you.
 ### Ships Not Appearing
 
 **Possible Causes:**
+
 1. **Kafka is not running** (most common)
    - Check: `docker ps | findstr kafka`
    - Solution: Start Kafka: `docker-compose up -d kafka`
    - Note: Replicas will automatically reconnect when Kafka starts
 
-2. **Firewall blocking port 9092**
-   - Check: `netstat -an | findstr 9092`
-   - Solution: Open firewall (see Step 3)
+2. **ngrok is not running** (if using ngrok)
+   - Check: Is ngrok terminal window still open?
+   - Solution: Start ngrok: `ngrok tcp 9092`
+   - ⚠️ **Important:** ngrok URL changes when you restart it - update `docker-compose.yml` and restart Kafka
 
-3. **Wrong IP address in docker-compose.yml**
-   - Check: `KAFKA_ADVERTISED_LISTENERS` uses your actual IP (not localhost)
-   - Solution: Update docker-compose.yml with correct IP
+3. **Wrong address in docker-compose.yml**
+   - **If using ngrok:** Check `KAFKA_ADVERTISED_LISTENERS` matches your current ngrok URL
+   - **If using local IP:** Check `KAFKA_ADVERTISED_LISTENERS` uses your actual IP (not localhost)
+   - Solution: Update docker-compose.yml with correct address
+
+4. **Firewall blocking port 9092** (only for local IP, not ngrok)
+   - Check: `netstat -an | findstr 9092`
+   - Solution: Open firewall (see Option B, Step 3)
 
 **Solutions:**
 - ✅ Check if Kafka is running: `docker ps | findstr kafka`
-- ✅ Check firewall allows port 9092
-- ✅ Verify `KAFKA_ADVERTISED_LISTENERS` has your IP (not localhost)
+- ✅ Check if ngrok is running (if using ngrok)
+- ✅ Verify `KAFKA_ADVERTISED_LISTENERS` has correct address
 - ✅ Check master logs for connection errors
-- ✅ **Keep Kafka running** - replicas need it to sync
+- ✅ **Keep Kafka and ngrok running** - replicas need them to sync
 
 ### Kafka Connection Issues
 
@@ -255,12 +351,22 @@ Use the REPLICA_SETUP_GUIDE.md I shared with you.
 - ✅ Replicas will automatically reconnect (no manual steps)
 - ✅ All queued operations from replicas will sync automatically
 
+**If you restart ngrok (if using ngrok):**
+- ⚠️ **ngrok URL will change** - you must:
+  1. Copy new ngrok URL from terminal
+  2. Update `docker-compose.yml`: `KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://<NEW_NGROK_URL>`
+  3. Restart Kafka: `docker-compose down && docker-compose up -d kafka`
+  4. Share new URL with friend (they need to update their `.env`)
+
 **Commands:**
 - Restart Kafka: `docker-compose restart kafka`
 - Check logs: `docker logs kafka`
-- Verify IP address hasn't changed: `ipconfig`
+- Verify IP address hasn't changed: `ipconfig` (for local IP)
+- Check ngrok status: Look at ngrok terminal window (for ngrok)
 
-**Best Practice:** Keep Kafka running continuously. Use `docker-compose up -d kafka` and add `restart: unless-stopped` to docker-compose.yml for auto-restart.
+**Best Practice:** 
+- Keep Kafka running continuously. Use `docker-compose up -d kafka` and add `restart: unless-stopped` to docker-compose.yml for auto-restart.
+- **If using ngrok:** Keep ngrok terminal open. Consider using ngrok paid plan for static URLs.
 
 ---
 
@@ -283,4 +389,21 @@ netstat -an | findstr 9092
 ---
 
 **Share `REPLICA_SETUP_GUIDE.md` with your friend!**
+
+---
+
+## 🌍 Production Deployment
+
+**For production where ships connect over the internet** (not same network):
+
+👉 **See [PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md)** for:
+- Cloud deployment options
+- Public IP configuration
+- VPN setup
+- SSL/TLS security
+- Production best practices
+
+**Key Difference:**
+- **This guide:** Same network (testing/local)
+- **Production guide:** Internet connection (ships at sea)
 

@@ -1,7 +1,7 @@
 /**
  * Message Tracker Service
  * Provides idempotency by tracking processed message IDs
- * Uses Strapi Entity Service for proper connection management
+ * Uses strapi.db.query() for reliable async context operations
  */
 
 const CONTENT_TYPE = 'plugin::offline-sync.processed-message';
@@ -31,20 +31,25 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
   // Capture strapi in closure to ensure it's always available
   const strapi = strapiInstance;
 
+  // Helper to generate a document ID (Strapi 5 format)
+  const generateDocumentId = () => {
+    return `${Date.now().toString(36)}${Math.random().toString(36).substr(2, 9)}`;
+  };
+
   return {
     /**
      * Check if a message has already been processed
      */
     async isProcessed(messageId: string): Promise<boolean> {
       if (!messageId) return false;
-      if (!strapi) {
+      if (!strapi || !strapi.db) {
         console.error('[MessageTracker] Strapi instance not available');
         return false;
       }
 
       try {
-        const existing = await strapi.documents(CONTENT_TYPE).findFirst({
-          filters: { messageId: { $eq: messageId } },
+        const existing = await strapi.db.query(CONTENT_TYPE).findOne({
+          where: { messageId },
         });
         return !!existing;
       } catch (error: unknown) {
@@ -61,30 +66,34 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
      */
     async markProcessed(messageId: string, metadata: MessageMetadata = {}): Promise<boolean> {
       if (!messageId) return false;
-      if (!strapi) {
+      if (!strapi || !strapi.db) {
         console.error('[MessageTracker] Strapi instance not available');
         return false;
       }
 
       try {
         // Check if already exists (idempotent operation)
-        const existing = await strapi.documents(CONTENT_TYPE).findFirst({
-          filters: { messageId: { $eq: messageId } },
+        const existing = await strapi.db.query(CONTENT_TYPE).findOne({
+          where: { messageId },
         });
 
         if (existing) {
           return false; // Already processed
         }
 
-        await strapi.documents(CONTENT_TYPE).create({
+        const now = new Date();
+        await strapi.db.query(CONTENT_TYPE).create({
           data: {
+            documentId: generateDocumentId(),
             messageId,
             shipId: metadata.shipId || null,
             contentType: metadata.contentType || null,
             contentId: metadata.contentId || null,
             operation: metadata.operation || null,
             status: 'processed',
-            processedAt: new Date(),
+            processedAt: now,
+            createdAt: now,
+            updatedAt: now,
           },
         });
 
@@ -107,27 +116,34 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
      */
     async markFailed(messageId: string): Promise<void> {
       if (!messageId) return;
-      if (!strapi) {
+      if (!strapi || !strapi.db) {
         console.error('[MessageTracker] Strapi instance not available');
         return;
       }
 
       try {
-        const existing = await strapi.documents(CONTENT_TYPE).findFirst({
-          filters: { messageId: { $eq: messageId } },
+        const existing = await strapi.db.query(CONTENT_TYPE).findOne({
+          where: { messageId },
         });
 
+        const now = new Date();
         if (existing) {
-          await strapi.documents(CONTENT_TYPE).update({
-            documentId: existing.documentId,
-            data: { status: 'failed' },
+          await strapi.db.query(CONTENT_TYPE).update({
+            where: { id: existing.id },
+            data: { 
+              status: 'failed',
+              updatedAt: now,
+            },
           });
         } else {
-          await strapi.documents(CONTENT_TYPE).create({
+          await strapi.db.query(CONTENT_TYPE).create({
             data: {
+              documentId: generateDocumentId(),
               messageId,
               status: 'failed',
-              processedAt: new Date(),
+              processedAt: now,
+              createdAt: now,
+              updatedAt: now,
             },
           });
         }
@@ -143,7 +159,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
      * Cleanup old processed messages (retention policy)
      */
     async cleanup(retentionDays: number = 7): Promise<number> {
-      if (!strapi) {
+      if (!strapi || !strapi.db) {
         console.error('[MessageTracker] Strapi instance not available');
         return 0;
       }
@@ -151,16 +167,16 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
       try {
         const cutoffDate = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
 
-        const oldMessages = await strapi.documents(CONTENT_TYPE).findMany({
-          filters: {
-            processedAt: { $lt: cutoffDate.toISOString() },
+        const oldMessages = await strapi.db.query(CONTENT_TYPE).findMany({
+          where: {
+            processedAt: { $lt: cutoffDate },
           },
-          limit: 1000, // Process in batches
+          limit: 1000,
         });
 
         for (const msg of oldMessages) {
-          await strapi.documents(CONTENT_TYPE).delete({
-            documentId: msg.documentId,
+          await strapi.db.query(CONTENT_TYPE).delete({
+            where: { id: msg.id },
           });
         }
 
@@ -189,13 +205,13 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
       failed: number;
       lastProcessed: Date | null;
     }> {
-      if (!strapi) {
+      if (!strapi || !strapi.db) {
         return { total: 0, processed: 0, failed: 0, lastProcessed: null };
       }
 
       try {
-        const all = await strapi.documents(CONTENT_TYPE).findMany({
-          sort: { processedAt: 'desc' },
+        const all = await strapi.db.query(CONTENT_TYPE).findMany({
+          orderBy: { processedAt: 'desc' },
           limit: 10000,
         });
 

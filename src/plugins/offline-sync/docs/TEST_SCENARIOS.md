@@ -29,6 +29,9 @@ Before running any tests, ensure:
 - ✅ Replica system is running and connected
 - ✅ Both systems have database migrations applied
 - ✅ Network connectivity between master and replica
+  - **If using ngrok:** Master's ngrok is running and URL is correct
+  - **If using local IP:** Both systems on same network
+  - **If using internet:** Public IP/domain configured correctly
 - ✅ Access to Strapi admin panels on both systems
 - ✅ Access to database (for verification)
 

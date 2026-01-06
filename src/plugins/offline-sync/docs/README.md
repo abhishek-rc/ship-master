@@ -9,7 +9,8 @@ Welcome to the Offline Sync Plugin documentation! This directory contains all do
 ### 🚀 Getting Started
 
 - **[REPLICA_SETUP_GUIDE.md](./REPLICA_SETUP_GUIDE.md)** - Complete guide for setting up a Replica (Ship) system
-- **[MASTER_SETUP_SUMMARY.md](./MASTER_SETUP_SUMMARY.md)** - Quick reference for Master setup
+- **[MASTER_SETUP_SUMMARY.md](./MASTER_SETUP_SUMMARY.md)** - Quick reference for Master setup (local network/testing)
+- **[PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md)** - Production deployment guide (ships over internet)
 
 ### 🧪 Testing
 
@@ -49,10 +50,11 @@ Welcome to the Offline Sync Plugin documentation! This directory contains all do
 3. Test your setup: **[TEST_SCENARIOS.md](./TEST_SCENARIOS.md)**
 
 ### For Master Administrators
-1. Quick setup: **[MASTER_SETUP_SUMMARY.md](./MASTER_SETUP_SUMMARY.md)**
-2. Share **[REPLICA_SETUP_GUIDE.md](./REPLICA_SETUP_GUIDE.md)** with replica administrators
-3. Understand conflict resolution: **[OFFLINE_SYNC_EXPLAINED.md](./OFFLINE_SYNC_EXPLAINED.md)** (Conflict section)
-4. Test system: **[TEST_SCENARIOS.md](./TEST_SCENARIOS.md)**
+1. **Testing/Local:** Quick setup: **[MASTER_SETUP_SUMMARY.md](./MASTER_SETUP_SUMMARY.md)** (same network)
+2. **Production:** Deploy for ships: **[PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md)** (over internet)
+3. Share **[REPLICA_SETUP_GUIDE.md](./REPLICA_SETUP_GUIDE.md)** with replica administrators
+4. Understand conflict resolution: **[OFFLINE_SYNC_EXPLAINED.md](./OFFLINE_SYNC_EXPLAINED.md)** (Conflict section)
+5. Test system: **[TEST_SCENARIOS.md](./TEST_SCENARIOS.md)**
 
 ### For Developers
 1. Architecture overview: **[HIGH_LEVEL_DESIGN.md](./HIGH_LEVEL_DESIGN.md)**
@@ -79,9 +81,9 @@ Welcome to the Offline Sync Plugin documentation! This directory contains all do
 **Purpose:** Quick reference for master setup  
 **Audience:** Master administrators  
 **Contents:**
-- Quick setup steps
-- Kafka configuration
-- Firewall setup
+- Quick setup steps (ngrok recommended for testing with friends far away)
+- Kafka configuration (ngrok or local IP)
+- Firewall setup (for local IP)
 - Information to share with replicas
 
 ### OFFLINE_SYNC_EXPLAINED.md
@@ -128,6 +130,19 @@ Welcome to the Offline Sync Plugin documentation! This directory contains all do
 - Bi-directional sync tests
 - Reconnection tests
 - Test checklist and results template
+
+### PRODUCTION_DEPLOYMENT.md
+**Purpose:** Production deployment guide for ships connecting over internet  
+**Audience:** System Administrators, DevOps, Production Teams  
+**Contents:**
+- Production architecture (ships over internet)
+- Deployment options (Public IP, Cloud, VPN, Reverse Proxy)
+- Security configuration (SSL/TLS, SASL authentication)
+- Network requirements
+- Configuration examples
+- Testing production setup
+- Common production issues
+- Monitoring and best practices
 
 ---
 

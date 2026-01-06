@@ -186,19 +186,61 @@ Before you begin, make sure you have:
 
 **Note:** You don't need to install Kafka - the master is running it in Docker and you'll connect remotely.
 
+### 🌐 Network Options
+
+**Do you need to be on the same WiFi?**
+
+**Answer: NO - You have options:**
+
+1. **Same WiFi** (Easiest):
+   - Master IP: `192.168.1.100` (local IP)
+   - Works immediately, no extra setup
+
+2. **Different Networks (Internet)**:
+   - Master IP: `54.123.45.67` (public IP)
+   - Or: `kafka.yourdomain.com` (domain name)
+   - Or: `0.tcp.ngrok.io:12345` (ngrok tunnel)
+   - Works over internet - perfect for testing with friend far away!
+
+3. **Cloud Hosting**:
+   - Master IP: Cloud server's public IP
+   - Works from anywhere in the world
+
+**All options work the same way** - just use the correct IP/domain in your `.env` file!
+
+---
+
 You need the following information from the master administrator:
 
-1. **Master's IP Address** (e.g., `192.168.1.100` or `10.0.0.5`)
-   - This is the IP address of the master's computer on the network
+1. **Master's IP Address or Domain** (e.g., `192.168.1.100` or `54.123.45.67` or `kafka.yourdomain.com`)
+   - **Same WiFi:** Local IP like `192.168.1.100`
+   - **Internet:** Public IP or domain name
+   - **ngrok:** ngrok URL like `0.tcp.ngrok.io:12345`
 2. **Kafka Port** (usually `9092`)
    - This port is already exposed from the master's Docker container
 3. **Unique Ship ID** (e.g., `ship-001`, `ship-atlantic-001`)
    - Choose a unique identifier for your replica system
 
-**Example:**
+**Examples:**
+
+**Same WiFi:**
 ```
 Master IP: 192.168.1.100
 Kafka Port: 9092
+Your Ship ID: ship-001
+```
+
+**Internet (Public IP):**
+```
+Master IP: 54.123.45.67
+Kafka Port: 9092
+Your Ship ID: ship-001
+```
+
+**Internet (ngrok):**
+```
+Master IP: 0.tcp.ngrok.io:12345
+Kafka Port: (included in URL)
 Your Ship ID: ship-001
 ```
 
@@ -308,10 +350,18 @@ docker run --name postgres-replica \
    # ============================================
    # Kafka Configuration
    # ============================================
-   # IMPORTANT: Replace <MASTER_IP> with the actual IP address from master
-   # This connects to the master's Kafka running in Docker
-   # Example: KAFKA_BROKERS=192.168.1.100:9092
-   KAFKA_BROKERS=<MASTER_IP>:9092
+   # IMPORTANT: Replace with the address from master administrator
+   # 
+   # If master is using ngrok (for testing over internet):
+   # KAFKA_BROKERS=0.tcp.ngrok.io:12345
+   # 
+   # If master is on same WiFi:
+   # KAFKA_BROKERS=192.168.1.100:9092
+   # 
+   # If master is on cloud/internet:
+   # KAFKA_BROKERS=54.123.45.67:9092
+   # 
+   KAFKA_BROKERS=<MASTER_ADDRESS>:<PORT>
    
    # Note: You don't need to install Kafka - you're connecting to master's Kafka!
    
@@ -335,7 +385,10 @@ docker run --name postgres-replica \
    ```
 
 3. **Replace the placeholders**:
-   - `<MASTER_IP>` → The IP address provided by master administrator
+   - `<MASTER_ADDRESS>:<PORT>` → The address provided by master administrator:
+     - **ngrok:** `0.tcp.ngrok.io:12345` (use exactly as provided)
+     - **Same WiFi:** `192.168.1.100:9092`
+     - **Internet:** `54.123.45.67:9092` or `kafka.yourdomain.com:9092`
    - `ship-001` → Your unique ship ID (provided by master administrator)
    - `your-app-keys-here` → Generate unique keys (see below)
    - `your-database-password` → Your PostgreSQL password
@@ -353,6 +406,23 @@ docker run --name postgres-replica \
 
 Before starting Strapi, verify you can connect to the master's Kafka:
 
+### If Master is Using ngrok:
+
+**On Windows:**
+```powershell
+# Extract hostname and port from ngrok URL
+# Example: 0.tcp.ngrok.io:12345
+Test-NetConnection -ComputerName 0.tcp.ngrok.io -Port 12345
+```
+
+**On Linux/Mac:**
+```bash
+# Example: 0.tcp.ngrok.io:12345
+nc -zv 0.tcp.ngrok.io 12345
+```
+
+### If Master is on Same WiFi or Internet:
+
 **On Windows:**
 ```powershell
 Test-NetConnection -ComputerName <MASTER_IP> -Port 9092
@@ -368,9 +438,10 @@ nc -zv <MASTER_IP> 9092
 **Expected Result:**
 - ✅ Connection should succeed
 - ✅ If it fails, check:
+  - Master's ngrok is running (if using ngrok)
   - Master's firewall settings
   - Network connectivity
-  - Correct IP address
+  - Correct address/port
 
 ---
 
@@ -752,6 +823,8 @@ Kafka producer connection deferred: Connection timeout
 **Common Causes:**
 1. **🌊 Internet disconnected** (PRIMARY - WiFi off, network cable unplugged, at sea)
 2. **Master's Kafka is down** (Secondary - less common)
+3. **Master's ngrok is down** (If using ngrok - master's ngrok terminal closed)
+4. **ngrok URL changed** (If using ngrok - master restarted ngrok and got new URL)
 
 **Solutions:**
 1. ✅ **Check your internet connection:**
@@ -759,21 +832,33 @@ Kafka producer connection deferred: Connection timeout
    - Is network cable connected?
    - Can you access other websites?
    
-2. ✅ **If internet is fine, ask master admin to verify Kafka is running:**
+2. ✅ **If using ngrok, ask master admin to verify:**
+   - Is ngrok terminal still open?
+   - Did ngrok URL change? (ngrok URL changes when restarted)
+   - If URL changed, master needs to:
+     1. Update `docker-compose.yml` with new ngrok URL
+     2. Restart Kafka
+     3. Share new URL with you
+   - You need to update your `.env` with new URL and restart Strapi
+   
+3. ✅ **If internet is fine, ask master admin to verify Kafka is running:**
    ```powershell
    # Master should run this:
    docker ps | findstr kafka
    # Should show Kafka container running
    ```
    
-3. ✅ Verify master IP address is correct (ask master admin to confirm)
-4. ✅ Test network connectivity (Step 5)
-5. ✅ **Ask master admin to verify:**
+4. ✅ Verify master address is correct (ask master admin to confirm):
+   - **If ngrok:** Check ngrok URL matches exactly (e.g., `0.tcp.ngrok.io:12345`)
+   - **If local IP:** Check IP address matches (e.g., `192.168.1.100:9092`)
+5. ✅ Test network connectivity (Step 5)
+6. ✅ **Ask master admin to verify:**
    - Kafka Docker container is running: `docker ps | findstr kafka`
-   - Master's firewall allows port 9092
-   - `KAFKA_ADVERTISED_LISTENERS` in master's `docker-compose.yml` uses master's IP (not localhost)
-6. ✅ Check if you're on the same network as master
-7. ✅ Verify master's Kafka is accessible: `telnet <MASTER_IP> 9092` or `Test-NetConnection -ComputerName <MASTER_IP> -Port 9092`
+   - If using ngrok: ngrok is running and URL is correct
+   - If using local IP: Master's firewall allows port 9092
+   - `KAFKA_ADVERTISED_LISTENERS` in master's `docker-compose.yml` uses correct address
+7. ✅ Check if you're on the same network as master (only for local IP, not ngrok)
+8. ✅ Verify master's Kafka is accessible: Test connection (Step 5)
 
 **Important:** 
 - ✅ **PRIMARY SCENARIO:** If your internet is disconnected (WiFi off, at sea), you can continue working normally. Master's Kafka stays online. All operations will sync automatically when YOUR internet is restored!
@@ -844,13 +929,24 @@ Error: connect ECONNREFUSED 127.0.0.1:5432
    - Solution: Ask master admin to start Kafka
    - Your operations are queued and will sync automatically when Kafka is back
 
-2. **Network connectivity issue**
-   - Check: Can you reach master's IP:9092?
+2. **Master's ngrok is down** (if using ngrok)
+   - Check: Is master's ngrok terminal still open?
+   - Solution: Ask master admin to start ngrok: `ngrok tcp 9092`
+   - **Important:** If ngrok URL changed, master needs to update `docker-compose.yml` and share new URL with you
+
+3. **Network connectivity issue**
+   - Check: Can you reach master's address?
+   - **If ngrok:** Test connection to ngrok URL
+   - **If local IP:** Test connection to master's IP:9092
    - Solution: Fix network connectivity
 
-3. **Kafka connection not established**
+4. **Kafka connection not established**
    - Check logs for connection errors
    - Solution: See "Cannot Connect to Kafka" section above
+
+5. **ngrok URL changed** (if using ngrok)
+   - Master restarted ngrok and got new URL
+   - Solution: Ask master for new URL, update your `.env`, restart Strapi
 
 **Solutions:**
 1. ✅ **First, verify master's Kafka is running** (ask master admin)

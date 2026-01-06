@@ -396,17 +396,22 @@ export default ({ strapi }: { strapi: any }) => {
 
   // Register Document Service middleware for Strapi 5
   strapi.documents.use(async (context: SyncContext, next: () => Promise<any>) => {
-    // Execute the action first
-    const result = await next();
-
     const { action, uid } = context;
 
-    // Skip if no uid
-    if (!uid) return result;
+    // Skip plugin and admin content types BEFORE calling next()
+    // This prevents potential circular references when our services use strapi.documents()
+    if (!uid || uid.startsWith('plugin::') || uid.startsWith('admin::')) {
+      return await next();
+    }
 
-    // Skip plugin and admin content types
-    if (uid.startsWith('plugin::') || uid.startsWith('admin::')) {
-      return result;
+    // Execute the action - wrapped in try-catch to prevent middleware chain failures
+    let result: any;
+    try {
+      result = await next();
+    } catch (error: any) {
+      // Log but don't block the operation
+      strapi.log.debug(`[Sync] Middleware error during ${action} on ${uid}: ${error.message}`);
+      throw error; // Re-throw to let Strapi handle it
     }
 
     // Filter by allowed content types if configured
