@@ -34,6 +34,7 @@ export default ({ strapi }: { strapi: any }) => {
       operation: 'create' | 'update' | 'delete';
       localVersion: number;
       data: any;
+      locale?: string | null; // For i18n support
     }): Promise<any> {
       if (!await this.ensureTable()) {
         strapi.log.warn('sync_queue table does not exist');
@@ -41,17 +42,29 @@ export default ({ strapi }: { strapi: any }) => {
       }
 
       const db = strapi.db.connection;
+      
+      // Build insert data - include locale only if provided
+      const insertData: any = {
+        ship_id: operation.shipId,
+        content_type: operation.contentType,
+        content_id: String(operation.contentId),
+        operation: operation.operation,
+        local_version: operation.localVersion,
+        data: JSON.stringify(operation.data),
+        status: 'pending',
+        created_at: new Date(),
+      };
+      
+      // Include locale in data JSON for i18n support
+      if (operation.locale) {
+        insertData.data = JSON.stringify({
+          ...operation.data,
+          _syncLocale: operation.locale, // Store locale in data
+        });
+      }
+      
       const [result] = await db('sync_queue')
-        .insert({
-          ship_id: operation.shipId,
-          content_type: operation.contentType,
-          content_id: String(operation.contentId),
-          operation: operation.operation,
-          local_version: operation.localVersion,
-          data: JSON.stringify(operation.data),
-          status: 'pending',
-          created_at: new Date(),
-        })
+        .insert(insertData)
         .returning('*');
 
       return result;
@@ -77,10 +90,22 @@ export default ({ strapi }: { strapi: any }) => {
           .update({ status: 'syncing' });
       }
 
-      return entries.map((entry: any) => ({
-        ...entry,
-        data: parseJsonField(entry.data),
-      }));
+      return entries.map((entry: any) => {
+        const parsedData = parseJsonField(entry.data);
+        
+        // Extract locale from data if stored there
+        let locale = null;
+        if (parsedData && parsedData._syncLocale) {
+          locale = parsedData._syncLocale;
+          delete parsedData._syncLocale; // Remove from data
+        }
+        
+        return {
+          ...entry,
+          data: parsedData,
+          locale, // Add locale as separate field
+        };
+      });
     },
 
     /**

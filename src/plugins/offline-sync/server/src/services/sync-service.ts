@@ -27,7 +27,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
 
         for (const operation of pending) {
           try {
-            const message = {
+            const message: any = {
               messageId: `msg-${Date.now()}-${operation.id}`,
               shipId: config.shipId,
               timestamp: new Date().toISOString(),
@@ -40,6 +40,11 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
                 queueId: operation.id,
               },
             };
+
+            // Include locale if present (for i18n support)
+            if (operation.locale) {
+              message.locale = operation.locale;
+            }
 
             await kafkaProducer.send(message);
             // Mark as 'synced' - Kafka guarantees delivery, so once sent we can consider it synced
@@ -169,9 +174,20 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
         // Handle operations
         if (operation === 'delete') {
           if (masterDocumentId) {
-            await strapi.documents(contentType).delete({ documentId: masterDocumentId });
-            await documentMapping.deleteMapping(shipId, contentType, replicaDocumentId);
-            strapi.log.info(`[Sync] ✅ Deleted ${contentType} (replica: ${replicaDocumentId})`);
+            // Use locale if provided (for locale-specific deletes)
+            const deleteOptions: any = { documentId: masterDocumentId };
+            if (message.locale) {
+              deleteOptions.locale = message.locale;
+              strapi.log.info(`[Sync] 🗑️ Deleting ${contentType} locale=${message.locale} (replica: ${replicaDocumentId})`);
+            }
+            
+            await strapi.documents(contentType).delete(deleteOptions);
+            
+            // Only delete mapping if ALL locales were deleted (no specific locale)
+            if (!message.locale) {
+              await documentMapping.deleteMapping(shipId, contentType, replicaDocumentId);
+            }
+            strapi.log.info(`[Sync] ✅ Deleted ${contentType}${message.locale ? ` [${message.locale}]` : ''} (replica: ${replicaDocumentId})`);
           } else {
             strapi.log.debug(`[Sync] Delete skipped - no mapping for ${replicaDocumentId}`);
           }
@@ -352,28 +368,41 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
         );
 
         if (operation === 'delete') {
-          strapi.log.info(`[Sync] 🗑️ Processing delete for ${contentType}/${masterDocumentId}`);
+          const deleteLocale = message.locale || null;
+          strapi.log.info(`[Sync] 🗑️ Processing delete for ${contentType}/${masterDocumentId}${deleteLocale ? ` [${deleteLocale}]` : ' [all locales]'}`);
           strapi.log.info(`[Sync]   Looking up mapping for shipId=${shipId}, masterDoc=${masterDocumentId}`);
 
           if (localMapping?.replicaDocumentId) {
             strapi.log.info(`[Sync]   Found mapping: masterDoc=${masterDocumentId} → localDoc=${localMapping.replicaDocumentId}`);
 
             // Check if local document exists
-            const localDoc = await strapi.documents(contentType).findOne({
-              documentId: localMapping.replicaDocumentId
-            });
+            const findOptions: any = { documentId: localMapping.replicaDocumentId };
+            if (deleteLocale) {
+              findOptions.locale = deleteLocale;
+            }
+            
+            const localDoc = await strapi.documents(contentType).findOne(findOptions);
 
             if (localDoc) {
-              await strapi.documents(contentType).delete({
-                documentId: localMapping.replicaDocumentId
-              });
-              strapi.log.info(`[Sync] ✅ Deleted local ${contentType} (${localMapping.replicaDocumentId}) from master`);
+              // Use locale if provided (for locale-specific deletes)
+              const deleteOptions: any = { documentId: localMapping.replicaDocumentId };
+              if (deleteLocale) {
+                deleteOptions.locale = deleteLocale;
+              }
+              
+              await strapi.documents(contentType).delete(deleteOptions);
+              strapi.log.info(`[Sync] ✅ Deleted local ${contentType}${deleteLocale ? ` [${deleteLocale}]` : ''} (${localMapping.replicaDocumentId}) from master`);
             } else {
-              strapi.log.warn(`[Sync] ⚠️ Local document not found: ${localMapping.replicaDocumentId}`);
+              strapi.log.warn(`[Sync] ⚠️ Local document not found: ${localMapping.replicaDocumentId}${deleteLocale ? ` [${deleteLocale}]` : ''}`);
             }
 
-            // Clean up mapping
-            await documentMapping.deleteMapping(shipId, contentType, localMapping.replicaDocumentId);
+            // Only clean up mapping if ALL locales were deleted (no specific locale)
+            if (!deleteLocale) {
+              await documentMapping.deleteMapping(shipId, contentType, localMapping.replicaDocumentId);
+              strapi.log.info(`[Sync]   Mapping removed (all locales deleted)`);
+            } else {
+              strapi.log.info(`[Sync]   Mapping preserved (only locale ${deleteLocale} deleted)`);
+            }
           } else {
             strapi.log.warn(`[Sync] ⚠️ No mapping found for ${contentType}/${masterDocumentId}`);
             strapi.log.warn(`[Sync]   Content may have been created before sync was active`);

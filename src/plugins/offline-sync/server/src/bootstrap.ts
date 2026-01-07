@@ -541,6 +541,9 @@ export default ({ strapi }: { strapi: any }) => {
       if (action === 'create') operation = 'create';
       if (action === 'delete') operation = 'delete';
 
+      // Capture locale for i18n support (important for locale-specific deletes)
+      const locale = (context.params as any)?.locale || (result as any)?.locale || null;
+
       // For publish action, fetch full document data if result is incomplete
       let syncData = result;
       if (action === 'publish' && (!result || Object.keys(result).length < 3)) {
@@ -579,9 +582,10 @@ export default ({ strapi }: { strapi: any }) => {
             operation,
             localVersion: version,
             data: safeData,
+            locale, // Include locale for i18n support
           });
 
-          strapi.log.info(`[Sync] ✅ Queued ${operation} for ${uid} (${documentId})`);
+          strapi.log.info(`[Sync] ✅ Queued ${operation} for ${uid} (${documentId})${locale ? ` [${locale}]` : ''}`);
 
           // Trigger instant push (debounced)
           if ((strapi as any).offlineSyncPush) {
@@ -616,10 +620,11 @@ export default ({ strapi }: { strapi: any }) => {
               contentId: documentId,
               version: 0,
               data: safeData,
+              locale, // Include locale for i18n support
             };
 
             await kafkaProducer.sendToShips(message);
-            strapi.log.info(`[Sync] 📤 Published ${operation} for ${uid} (${documentId}) to ships`);
+            strapi.log.info(`[Sync] 📤 Published ${operation} for ${uid} (${documentId})${locale ? ` [${locale}]` : ''} to ships`);
           }
         } catch (error: any) {
           // Non-critical, don't fail the operation
