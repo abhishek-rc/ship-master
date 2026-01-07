@@ -494,141 +494,141 @@ export default ({ strapi }: { strapi: any }) => {
       return await next();
     }
 
-    // Execute the action - wrapped in try-catch to prevent middleware chain failures
-    let result: any;
+    // Execute the action first
+    const result = await next();
+
+    // Wrap ALL our sync logic in try-catch - our middleware should NEVER cause errors
     try {
-      result = await next();
-    } catch (error: any) {
-      // Log but don't block the operation
-      strapi.log.debug(`[Sync] Middleware error during ${action} on ${uid}: ${error.message}`);
-      throw error; // Re-throw to let Strapi handle it
-    }
 
-    // Filter by allowed content types if configured
-    if (pluginConfig.contentTypes?.length > 0) {
-      if (!pluginConfig.contentTypes.includes(uid)) {
-        return result;
-      }
-    }
-
-    // Only track specific actions
-    // Note: 'unpublish' is excluded as it would sync empty/null data
-    const trackedActions = ['create', 'update', 'delete', 'publish'];
-    if (!trackedActions.includes(action)) {
-      return result;
-    }
-
-    // Get document ID - handle various result formats
-    let documentId: string | undefined;
-
-    if (result?.documentId) {
-      documentId = result.documentId;
-    } else if (result?.id && typeof result.id === 'string') {
-      documentId = result.id;
-    } else if (context.params?.documentId && typeof context.params.documentId === 'string') {
-      documentId = context.params.documentId;
-    }
-
-    // Skip if no valid documentId (e.g., bulk operations, failed deletes)
-    if (!documentId || typeof documentId !== 'string' || documentId.length === 0) {
-      return result;
-    }
-
-    // Skip bulk operations (when result is an array or count object)
-    if (Array.isArray(result) || (result && typeof result === 'object' && 'count' in result)) {
-      strapi.log.debug(`[Sync] Skipping bulk operation for ${uid}`);
-      return result;
-    }
-
-    // Map action to operation
-    let operation: 'create' | 'update' | 'delete' = 'update';
-    if (action === 'create') operation = 'create';
-    if (action === 'delete') operation = 'delete';
-
-    // For publish action, fetch full document data if result is incomplete
-    let syncData = result;
-    if (action === 'publish' && (!result || Object.keys(result).length < 3)) {
-      try {
-        syncData = await strapi.documents(uid).findOne({ documentId });
-      } catch {
-        // If fetch fails, use original result
-      }
-    }
-
-    if (pluginConfig.mode === 'replica') {
-      // REPLICA MODE: Queue changes to push to master
-
-      // Skip if this change originated from master (prevents sync loop)
-      if ((strapi as any)._offlineSyncFromMaster) {
-        strapi.log.debug(`[Sync] Skipping queue for ${uid} (${documentId}) - originated from master`);
-        return result;
-      }
-
-      try {
-        const versionManager = strapi.plugin('offline-sync').service('version-manager');
-        const syncQueue = strapi.plugin('offline-sync').service('sync-queue');
-
-        // Increment version (skip for delete)
-        const version = operation !== 'delete'
-          ? await versionManager.incrementVersion(uid, documentId, pluginConfig.shipId)
-          : 0;
-
-        // Strip sensitive data before queuing
-        const safeData = operation !== 'delete' ? stripSensitiveData(syncData) : null;
-
-        await syncQueue.enqueue({
-          shipId: pluginConfig.shipId!,
-          contentType: uid,
-          contentId: documentId,
-          operation,
-          localVersion: version,
-          data: safeData,
-        });
-
-        strapi.log.info(`[Sync] ✅ Queued ${operation} for ${uid} (${documentId})`);
-
-        // Trigger instant push (debounced)
-        if ((strapi as any).offlineSyncPush) {
-          (strapi as any).offlineSyncPush();
+      // Filter by allowed content types if configured
+      if (pluginConfig.contentTypes?.length > 0) {
+        if (!pluginConfig.contentTypes.includes(uid)) {
+          return result;
         }
-      } catch (error: any) {
-        strapi.log.error(`[Sync] Queue error for ${action} ${uid}: ${error.message}`);
       }
-    } else if (pluginConfig.mode === 'master') {
-      // MASTER MODE: Publish changes to ships via Kafka
 
-      // Skip if this change originated from a ship (prevents sync loop)
-      // When master processes ship updates, it shouldn't broadcast them back
-      if ((strapi as any)._offlineSyncFromShip) {
-        strapi.log.debug(`[Sync] Skipping broadcast for ${uid} (${documentId}) - originated from ship`);
+      // Only track specific actions
+      // Note: 'unpublish' is excluded as it would sync empty/null data
+      const trackedActions = ['create', 'update', 'delete', 'publish'];
+      if (!trackedActions.includes(action)) {
         return result;
       }
 
-      try {
-        const kafkaProducer = strapi.plugin('offline-sync').service('kafka-producer');
+      // Get document ID - handle various result formats
+      let documentId: string | undefined;
 
-        // Only publish if Kafka is connected
-        if (kafkaProducer.isConnected()) {
+      if (result?.documentId) {
+        documentId = result.documentId;
+      } else if (result?.id && typeof result.id === 'string') {
+        documentId = result.id;
+      } else if (context.params?.documentId && typeof context.params.documentId === 'string') {
+        documentId = context.params.documentId;
+      }
+
+      // Skip if no valid documentId (e.g., bulk operations, failed deletes)
+      if (!documentId || typeof documentId !== 'string' || documentId.length === 0) {
+        return result;
+      }
+
+      // Skip bulk operations (when result is an array or count object)
+      if (Array.isArray(result) || (result && typeof result === 'object' && 'count' in result)) {
+        strapi.log.debug(`[Sync] Skipping bulk operation for ${uid}`);
+        return result;
+      }
+
+      // Map action to operation
+      let operation: 'create' | 'update' | 'delete' = 'update';
+      if (action === 'create') operation = 'create';
+      if (action === 'delete') operation = 'delete';
+
+      // For publish action, fetch full document data if result is incomplete
+      let syncData = result;
+      if (action === 'publish' && (!result || Object.keys(result).length < 3)) {
+        try {
+          syncData = await strapi.documents(uid).findOne({ documentId });
+        } catch {
+          // If fetch fails, use original result
+        }
+      }
+
+      if (pluginConfig.mode === 'replica') {
+        // REPLICA MODE: Queue changes to push to master
+
+        // Skip if this change originated from master (prevents sync loop)
+        if ((strapi as any)._offlineSyncFromMaster) {
+          strapi.log.debug(`[Sync] Skipping queue for ${uid} (${documentId}) - originated from master`);
+          return result;
+        }
+
+        try {
+          const versionManager = strapi.plugin('offline-sync').service('version-manager');
+          const syncQueue = strapi.plugin('offline-sync').service('sync-queue');
+
+          // Increment version (skip for delete)
+          const version = operation !== 'delete'
+            ? await versionManager.incrementVersion(uid, documentId, pluginConfig.shipId)
+            : 0;
+
+          // Strip sensitive data before queuing
           const safeData = operation !== 'delete' ? stripSensitiveData(syncData) : null;
 
-          const message = {
-            messageId: `master-${Date.now()}-${documentId}`,
-            shipId: 'master',
-            timestamp: new Date().toISOString(),
-            operation,
+          await syncQueue.enqueue({
+            shipId: pluginConfig.shipId!,
             contentType: uid,
             contentId: documentId,
-            version: 0,
+            operation,
+            localVersion: version,
             data: safeData,
-          };
+          });
 
-          await kafkaProducer.sendToShips(message);
-          strapi.log.info(`[Sync] 📤 Published ${operation} for ${uid} (${documentId}) to ships`);
+          strapi.log.info(`[Sync] ✅ Queued ${operation} for ${uid} (${documentId})`);
+
+          // Trigger instant push (debounced)
+          if ((strapi as any).offlineSyncPush) {
+            (strapi as any).offlineSyncPush();
+          }
+        } catch (error: any) {
+          strapi.log.error(`[Sync] Queue error for ${action} ${uid}: ${error.message}`);
         }
-      } catch (error: any) {
-        // Non-critical, don't fail the operation
-        strapi.log.debug(`[Sync] Failed to publish to ships: ${error.message}`);
+      } else if (pluginConfig.mode === 'master') {
+        // MASTER MODE: Publish changes to ships via Kafka
+
+        // Skip if this change originated from a ship (prevents sync loop)
+        // When master processes ship updates, it shouldn't broadcast them back
+        if ((strapi as any)._offlineSyncFromShip) {
+          strapi.log.debug(`[Sync] Skipping broadcast for ${uid} (${documentId}) - originated from ship`);
+          return result;
+        }
+
+        try {
+          const kafkaProducer = strapi.plugin('offline-sync').service('kafka-producer');
+
+          // Only publish if Kafka is connected
+          if (kafkaProducer.isConnected()) {
+            const safeData = operation !== 'delete' ? stripSensitiveData(syncData) : null;
+
+            const message = {
+              messageId: `master-${Date.now()}-${documentId}`,
+              shipId: 'master',
+              timestamp: new Date().toISOString(),
+              operation,
+              contentType: uid,
+              contentId: documentId,
+              version: 0,
+              data: safeData,
+            };
+
+            await kafkaProducer.sendToShips(message);
+            strapi.log.info(`[Sync] 📤 Published ${operation} for ${uid} (${documentId}) to ships`);
+          }
+        } catch (error: any) {
+          // Non-critical, don't fail the operation
+          strapi.log.debug(`[Sync] Failed to publish to ships: ${error.message}`);
+        }
       }
+    } catch (syncError: any) {
+      // Our sync logic failed - log but NEVER block the original operation
+      strapi.log.debug(`[Sync] Sync processing error (non-blocking): ${syncError.message}`);
     }
 
     return result;

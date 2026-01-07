@@ -352,7 +352,12 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
         );
 
         if (operation === 'delete') {
+          strapi.log.info(`[Sync] 🗑️ Processing delete for ${contentType}/${masterDocumentId}`);
+          strapi.log.info(`[Sync]   Looking up mapping for shipId=${shipId}, masterDoc=${masterDocumentId}`);
+
           if (localMapping?.replicaDocumentId) {
+            strapi.log.info(`[Sync]   Found mapping: masterDoc=${masterDocumentId} → localDoc=${localMapping.replicaDocumentId}`);
+
             // Check if local document exists
             const localDoc = await strapi.documents(contentType).findOne({
               documentId: localMapping.replicaDocumentId
@@ -362,11 +367,17 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
               await strapi.documents(contentType).delete({
                 documentId: localMapping.replicaDocumentId
               });
-              strapi.log.info(`[Sync] 📥 Deleted local ${contentType} (${localMapping.replicaDocumentId}) from master`);
+              strapi.log.info(`[Sync] ✅ Deleted local ${contentType} (${localMapping.replicaDocumentId}) from master`);
+            } else {
+              strapi.log.warn(`[Sync] ⚠️ Local document not found: ${localMapping.replicaDocumentId}`);
             }
 
             // Clean up mapping
             await documentMapping.deleteMapping(shipId, contentType, localMapping.replicaDocumentId);
+          } else {
+            strapi.log.warn(`[Sync] ⚠️ No mapping found for ${contentType}/${masterDocumentId}`);
+            strapi.log.warn(`[Sync]   Content may have been created before sync was active`);
+            strapi.log.warn(`[Sync]   Or this shipId (${shipId}) doesn't match the original sync`);
           }
         } else if (localMapping?.replicaDocumentId) {
           // Update existing local document
