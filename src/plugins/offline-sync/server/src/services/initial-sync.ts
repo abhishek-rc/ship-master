@@ -42,10 +42,16 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
       };
 
       // Get content types to sync
-      const contentTypesToSync = options.contentTypes || config.contentTypes || [];
+      let contentTypesToSync = options.contentTypes || config.contentTypes || [];
+      
+      // If no content types specified, auto-discover all API content types
+      if (contentTypesToSync.length === 0) {
+        contentTypesToSync = this.discoverApiContentTypes();
+        strapi.log.info(`[InitialSync] Auto-discovered ${contentTypesToSync.length} content types`);
+      }
       
       if (contentTypesToSync.length === 0) {
-        result.errors.push('No content types configured for sync');
+        result.errors.push('No content types found to sync');
         result.success = false;
         return result;
       }
@@ -209,6 +215,23 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
         mapped: 0,
         errors: ['Use pullFromMaster with dryRun=true first to see what would be synced'],
       };
+    },
+
+    /**
+     * Auto-discover all API content types (excludes plugin:: and admin::)
+     */
+    discoverApiContentTypes(): string[] {
+      const contentTypes: string[] = [];
+      
+      for (const uid of Object.keys(strapi.contentTypes)) {
+        // Only include api:: content types (user-created)
+        if (uid.startsWith('api::')) {
+          contentTypes.push(uid);
+        }
+      }
+      
+      strapi.log.info(`[InitialSync] Found content types: ${contentTypes.join(', ')}`);
+      return contentTypes;
     },
 
     /**
