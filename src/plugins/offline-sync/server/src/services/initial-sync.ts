@@ -25,14 +25,14 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
       details: Array<{ contentType: string; masterDocId: string; localDocId: string; action: string }>;
     }> {
       const config = strapi.config.get('plugin::offline-sync', {});
-      
+
       if (config.mode !== 'replica') {
         throw new Error('pullFromMaster only available in replica mode');
       }
 
       const shipId = config.shipId;
       const documentMapping = strapi.plugin('offline-sync').service('document-mapping');
-      
+
       const result = {
         success: true,
         synced: 0,
@@ -43,13 +43,13 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
 
       // Get content types to sync
       let contentTypesToSync = options.contentTypes || config.contentTypes || [];
-      
+
       // If no content types specified, auto-discover all API content types
       if (contentTypesToSync.length === 0) {
         contentTypesToSync = this.discoverApiContentTypes();
         strapi.log.info(`[InitialSync] Auto-discovered ${contentTypesToSync.length} content types`);
       }
-      
+
       if (contentTypesToSync.length === 0) {
         result.errors.push('No content types found to sync');
         result.success = false;
@@ -66,7 +66,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
       for (const contentType of contentTypesToSync) {
         try {
           strapi.log.info(`[InitialSync] Processing ${contentType}...`);
-          
+
           // Fetch all content from master
           const apiPath = this.contentTypeToApiPath(contentType);
           const masterContent = await this.fetchFromMaster(
@@ -84,7 +84,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
 
           for (const masterDoc of masterContent) {
             const masterDocId = masterDoc.documentId || masterDoc.id;
-            
+
             if (!masterDocId) {
               result.errors.push(`${contentType}: Document missing ID`);
               continue;
@@ -147,7 +147,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
                   localDoc.documentId,
                   masterDocId
                 );
-                
+
                 processedDocIds.add(trackingKey);
                 result.synced++;
                 result.details.push({
@@ -156,13 +156,13 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
                   localDocId: localDoc.documentId,
                   action: 'linked existing',
                 });
-                
+
                 strapi.log.info(`[InitialSync] Linked: ${masterDocId} → ${localDoc.documentId}`);
               } else {
                 // No local document - create new one
                 const cleanedData = this.cleanSyncData(masterDoc);
                 const docLocale = masterDoc._fetchedLocale || masterDoc.locale || 'en';
-                
+
                 try {
                   const created = await strapi.documents(contentType).create({
                     data: cleanedData,
@@ -177,7 +177,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
                       created.documentId,
                       masterDocId
                     );
-                    
+
                     processedDocIds.add(trackingKey);
                     result.synced++;
                     result.details.push({
@@ -186,7 +186,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
                       localDocId: created.documentId,
                       action: `created new (${docLocale})`,
                     });
-                    
+
                     strapi.log.info(`[InitialSync] Created: ${masterDocId} → ${created.documentId} (${docLocale})`);
                   }
                 } catch (createError: any) {
@@ -205,7 +205,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
       }
 
       strapi.log.info(`[InitialSync] Complete: ${result.synced} synced, ${result.skipped} skipped, ${result.errors.length} errors`);
-      
+
       if (result.errors.length > 0) {
         result.success = result.synced > 0; // Partial success if some items synced
       }
@@ -227,7 +227,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
       errors: string[];
     }> {
       const config = strapi.config.get('plugin::offline-sync', {});
-      
+
       if (config.mode !== 'replica') {
         throw new Error('createMappingsOnly only available in replica mode');
       }
@@ -246,14 +246,14 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
      */
     discoverApiContentTypes(): string[] {
       const contentTypes: string[] = [];
-      
+
       for (const uid of Object.keys(strapi.contentTypes)) {
         // Only include api:: content types (user-created)
         if (uid.startsWith('api::')) {
           contentTypes.push(uid);
         }
       }
-      
+
       strapi.log.info(`[InitialSync] Found content types: ${contentTypes.join(', ')}`);
       return contentTypes;
     },
@@ -266,7 +266,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
       // api::add-on.add-on -> /api/add-ons
       const parts = contentType.split('.');
       const name = parts[parts.length - 1];
-      
+
       // Simple pluralization (works for most cases)
       let plural = name;
       if (name.endsWith('y')) {
@@ -276,12 +276,12 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
       } else {
         plural = name + 's';
       }
-      
+
       return `/api/${plural}`;
     },
 
     /**
-     * Fetch content from master API (all locales)
+     * Fetch content from master API (handles i18n and non-i18n content types)
      */
     async fetchFromMaster(
       masterUrl: string,
@@ -292,53 +292,67 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
         'Content-Type': 'application/json',
         'ngrok-skip-browser-warning': 'true', // Bypass ngrok warning page
       };
-      
+
       if (apiToken) {
         headers['Authorization'] = `Bearer ${apiToken}`;
       }
 
       const allContent: any[] = [];
-      const locales = ['en', 'ar']; // Fetch both English and Arabic
 
-      for (const locale of locales) {
-        try {
-          // Use deep populate for components and relations
-          const url = `${masterUrl}${apiPath}?pagination[pageSize]=1000&populate=deep&locale=${locale}`;
-          
-          strapi.log.debug(`[InitialSync] Fetching: ${url}`);
-          
-          const response = await fetch(url, { headers });
-          
-          if (!response.ok) {
-            // Try without locale parameter (for non-i18n content types)
-            if (response.status === 400) {
-              const fallbackUrl = `${masterUrl}${apiPath}?pagination[pageSize]=1000&populate=deep`;
-              const fallbackResponse = await fetch(fallbackUrl, { headers });
-              
-              if (fallbackResponse.ok) {
-                const json = await fallbackResponse.json();
-                const data = json.data || [];
-                // Mark each item with locale info
-                data.forEach((item: any) => item._fetchedLocale = locale);
-                allContent.push(...data);
-                break; // Non-i18n content, don't try other locales
-              }
-            }
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-          }
+      // Strategy: Try without locale first (works for all content types)
+      // Then try with locales if the content type supports i18n
 
-          const json = await response.json();
+      // Step 1: Try fetching without locale (simpler, works for non-i18n)
+      const baseUrl = `${masterUrl}${apiPath}?pagination[pageSize]=1000&populate=*`;
+
+      strapi.log.debug(`[InitialSync] Trying base fetch: ${baseUrl}`);
+
+      try {
+        const baseResponse = await fetch(baseUrl, { headers });
+
+        if (baseResponse.ok) {
+          const json = await baseResponse.json();
           const data = json.data || [];
-          
-          // Mark each item with locale info
-          data.forEach((item: any) => item._fetchedLocale = locale);
-          allContent.push(...data);
-          
-          strapi.log.info(`[InitialSync] Fetched ${data.length} items for locale ${locale}`);
-        } catch (error: any) {
-          strapi.log.warn(`[InitialSync] Failed to fetch ${apiPath} for locale ${locale}: ${error.message}`);
-          // Continue with other locales
+
+          if (data.length > 0) {
+            strapi.log.info(`[InitialSync] Fetched ${data.length} items (no locale filter)`);
+
+            // Check if content has locale field (i18n enabled)
+            const hasLocale = data[0]?.locale;
+
+            if (hasLocale) {
+              // Content type has i18n - fetch each locale separately
+              strapi.log.debug(`[InitialSync] Content has i18n, fetching by locale...`);
+
+              const locales = ['en', 'ar'];
+              for (const locale of locales) {
+                try {
+                  const localeUrl = `${masterUrl}${apiPath}?pagination[pageSize]=1000&populate=*&locale=${locale}`;
+                  const localeResponse = await fetch(localeUrl, { headers });
+
+                  if (localeResponse.ok) {
+                    const localeJson = await localeResponse.json();
+                    const localeData = localeJson.data || [];
+                    localeData.forEach((item: any) => item._fetchedLocale = locale);
+                    allContent.push(...localeData);
+                    strapi.log.info(`[InitialSync] Fetched ${localeData.length} items for locale ${locale}`);
+                  }
+                } catch (localeError: any) {
+                  strapi.log.debug(`[InitialSync] Locale ${locale} fetch failed: ${localeError.message}`);
+                }
+              }
+            } else {
+              // No i18n - use the data as-is
+              allContent.push(...data);
+            }
+          } else {
+            strapi.log.debug(`[InitialSync] No items found at ${apiPath}`);
+          }
+        } else {
+          strapi.log.warn(`[InitialSync] Failed to fetch ${apiPath}: HTTP ${baseResponse.status}`);
         }
+      } catch (error: any) {
+        strapi.log.warn(`[InitialSync] Error fetching ${apiPath}: ${error.message}`);
       }
 
       // Deduplicate by documentId only (same doc appears in multiple locales)
@@ -351,7 +365,10 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
         }
       }
 
-      strapi.log.info(`[InitialSync] Deduplicated: ${allContent.length} → ${uniqueMap.size} unique documents`);
+      if (allContent.length > 0) {
+        strapi.log.info(`[InitialSync] Deduplicated: ${allContent.length} → ${uniqueMap.size} unique documents`);
+      }
+
       return Array.from(uniqueMap.values());
     },
 
@@ -364,10 +381,10 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
     ): Promise<any | null> {
       try {
         const docLocale = masterDoc._fetchedLocale || masterDoc.locale || 'en';
-        
+
         // Try to find by name/title first
         const nameField = masterDoc.name || masterDoc.title || masterDoc.label;
-        
+
         if (nameField) {
           const results = await strapi.documents(contentType).findMany({
             filters: {
@@ -380,7 +397,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
             locale: docLocale,
             limit: 1,
           });
-          
+
           if (results && results.length > 0) {
             return results[0];
           }
@@ -393,7 +410,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
             locale: docLocale,
             limit: 1,
           });
-          
+
           if (results && results.length > 0) {
             return results[0];
           }
@@ -418,7 +435,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
       }
 
       const cleaned: Record<string, any> = {};
-      
+
       for (const [key, value] of Object.entries(data)) {
         // Skip internal Strapi fields
         if ([
@@ -444,23 +461,23 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
               if (item && typeof item === 'object') {
                 const cleanedItem = this.cleanSyncData(item);
                 // Keep __component for dynamic zones
-                if (item.__component) {
-                  cleanedItem.__component = item.__component;
+                if ((item as any).__component) {
+                  cleanedItem.__component = (item as any).__component;
                 }
                 return cleanedItem;
               }
               return item;
             });
-          } else if (value.__component) {
+          } else if ((value as any).__component) {
             // Single component
             const cleanedComponent = this.cleanSyncData(value);
-            cleanedComponent.__component = value.__component;
+            cleanedComponent.__component = (value as any).__component;
             cleaned[key] = cleanedComponent;
-          } else if (value.data !== undefined) {
+          } else if ((value as any).data !== undefined) {
             // Strapi v5 relation format: { data: { id, attributes } }
             // Skip relations for now to avoid ID conflicts
             cleaned[key] = null;
-          } else if (value.id && !value.__component) {
+          } else if ((value as any).id && !(value as any).__component) {
             // Regular relation - skip to avoid ID conflicts
             cleaned[key] = null;
           } else {
@@ -471,7 +488,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
           cleaned[key] = value;
         }
       }
-      
+
       return cleaned;
     },
   };
