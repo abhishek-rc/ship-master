@@ -159,8 +159,18 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
      * Cleanup old processed messages (retention policy)
      */
     async cleanup(retentionDays: number = 7): Promise<number> {
-      if (!strapi || !strapi.db) {
-        console.error('[MessageTracker] Strapi instance not available');
+      // Skip if strapi is shutting down or db is not available
+      if (!strapi || !strapi.db || (strapi as any)._isShuttingDown) {
+        return 0;
+      }
+
+      // Check if connection is still valid
+      try {
+        const connection = strapi.db.connection;
+        if (!connection || connection.destroyed) {
+          return 0;
+        }
+      } catch {
         return 0;
       }
 
@@ -187,10 +197,11 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
         return oldMessages.length;
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : 'Unknown error';
-        if (strapi && strapi.log) {
+        // Use debug level for connection errors (expected during shutdown)
+        if (strapi?.log?.debug && (message.includes('connection') || message.includes('Connection'))) {
+          strapi.log.debug(`[MessageTracker] Cleanup skipped (connection unavailable)`);
+        } else if (strapi?.log?.error) {
           strapi.log.error(`[MessageTracker] Cleanup failed: ${message}`);
-        } else {
-          console.error(`[MessageTracker] Cleanup failed: ${message}`);
         }
         return 0;
       }

@@ -124,9 +124,9 @@ export default ({ strapi }: { strapi: any }) => {
     },
 
     /**
-     * Mark operation as conflict (Master rejected due to conflict)
+     * Mark operation as conflict pending (Master detected conflict, awaiting resolution)
      */
-    async markConflict(options: {
+    async markConflictPending(options: {
       contentType: string;
       contentId: string;
       shipId: string;
@@ -154,19 +154,136 @@ export default ({ strapi }: { strapi: any }) => {
         await db('sync_queue')
           .where({ id: entry.id })
           .update({
-            status: 'conflict',
+            status: 'conflict_pending',
+            conflict_id: options.conflictId,
+            conflict_reason: options.reason,
             error_message: `Conflict #${options.conflictId}: ${options.reason}`,
             updated_at: new Date(),
           });
         
-        strapi.log.info(`[SyncQueue] Marked entry ${entry.id} as conflict`);
+        strapi.log.info(`[SyncQueue] Marked entry ${entry.id} as conflict_pending (conflict #${options.conflictId})`);
       } else {
         strapi.log.debug(`[SyncQueue] No pending entry found for ${options.contentType}/${options.contentId}`);
       }
     },
 
     /**
-     * Get conflict entries
+     * Mark operation as conflict rejected (Master kept its version, ship changes discarded)
+     */
+    async markConflictRejected(options: {
+      contentType: string;
+      contentId: string;
+      shipId: string;
+      conflictId: number;
+      reason?: string;
+    }): Promise<void> {
+      if (!await this.ensureTable()) {
+        return;
+      }
+
+      const db = strapi.db.connection;
+      
+      await db('sync_queue')
+        .where({
+          ship_id: options.shipId,
+          content_type: options.contentType,
+          content_id: String(options.contentId),
+        })
+        .whereIn('status', ['conflict_pending', 'conflict'])
+        .update({
+          status: 'conflict_rejected',
+          conflict_resolution: 'keep-master',
+          conflict_resolved_at: new Date(),
+          error_message: options.reason || 'Master version kept, ship changes discarded',
+          updated_at: new Date(),
+        });
+      
+      strapi.log.info(`[SyncQueue] Marked conflict #${options.conflictId} as rejected for ${options.contentType}/${options.contentId}`);
+    },
+
+    /**
+     * Mark operation as conflict accepted (Ship version applied to master)
+     */
+    async markConflictAccepted(options: {
+      contentType: string;
+      contentId: string;
+      shipId: string;
+      conflictId: number;
+    }): Promise<void> {
+      if (!await this.ensureTable()) {
+        return;
+      }
+
+      const db = strapi.db.connection;
+      
+      await db('sync_queue')
+        .where({
+          ship_id: options.shipId,
+          content_type: options.contentType,
+          content_id: String(options.contentId),
+        })
+        .whereIn('status', ['conflict_pending', 'conflict'])
+        .update({
+          status: 'conflict_accepted',
+          conflict_resolution: 'keep-ship',
+          conflict_resolved_at: new Date(),
+          error_message: 'Ship version accepted and applied to master',
+          updated_at: new Date(),
+        });
+      
+      strapi.log.info(`[SyncQueue] Marked conflict #${options.conflictId} as accepted for ${options.contentType}/${options.contentId}`);
+    },
+
+    /**
+     * Mark operation as conflict merged (Partial merge applied)
+     */
+    async markConflictMerged(options: {
+      contentType: string;
+      contentId: string;
+      shipId: string;
+      conflictId: number;
+      mergeDetails?: string;
+    }): Promise<void> {
+      if (!await this.ensureTable()) {
+        return;
+      }
+
+      const db = strapi.db.connection;
+      
+      await db('sync_queue')
+        .where({
+          ship_id: options.shipId,
+          content_type: options.contentType,
+          content_id: String(options.contentId),
+        })
+        .whereIn('status', ['conflict_pending', 'conflict'])
+        .update({
+          status: 'conflict_merged',
+          conflict_resolution: 'merge',
+          conflict_resolved_at: new Date(),
+          error_message: options.mergeDetails || 'Changes were merged',
+          updated_at: new Date(),
+        });
+      
+      strapi.log.info(`[SyncQueue] Marked conflict #${options.conflictId} as merged for ${options.contentType}/${options.contentId}`);
+    },
+
+    /**
+     * Legacy method for backward compatibility
+     */
+    async markConflict(options: {
+      contentType: string;
+      contentId: string;
+      shipId: string;
+      conflictId: number;
+      reason: string;
+    }): Promise<void> {
+      // Use the new conflict_pending status
+      return this.markConflictPending(options);
+    },
+
+    /**
+     * Get conflict entries (all conflict-related statuses)
      */
     async getConflicts(shipId: string): Promise<any[]> {
       if (!await this.ensureTable()) {
@@ -175,7 +292,11 @@ export default ({ strapi }: { strapi: any }) => {
 
       const db = strapi.db.connection;
       const entries = await db('sync_queue')
-        .where({ ship_id: shipId, status: 'conflict' })
+        .where({ ship_id: shipId })
+        .where(function() {
+          this.where('status', 'like', 'conflict%')
+            .orWhere('status', 'conflict');
+        })
         .orderBy('created_at', 'desc')
         .limit(100);
 
@@ -183,6 +304,71 @@ export default ({ strapi }: { strapi: any }) => {
         ...entry,
         data: parseJsonField(entry.data),
       }));
+    },
+
+    /**
+     * Get pending conflicts (not yet resolved)
+     */
+    async getPendingConflicts(shipId: string): Promise<any[]> {
+      if (!await this.ensureTable()) {
+        return [];
+      }
+
+      const db = strapi.db.connection;
+      const entries = await db('sync_queue')
+        .where({ ship_id: shipId, status: 'conflict_pending' })
+        .orderBy('created_at', 'desc')
+        .limit(100);
+
+      return entries.map((entry: any) => ({
+        ...entry,
+        data: parseJsonField(entry.data),
+      }));
+    },
+
+    /**
+     * Get sync queue statistics with conflict breakdown
+     */
+    async getStats(shipId: string): Promise<{
+      pending: number;
+      syncing: number;
+      synced: number;
+      failed: number;
+      conflict_pending: number;
+      conflict_rejected: number;
+      conflict_accepted: number;
+      conflict_merged: number;
+      total: number;
+    }> {
+      if (!await this.ensureTable()) {
+        return {
+          pending: 0, syncing: 0, synced: 0, failed: 0,
+          conflict_pending: 0, conflict_rejected: 0, conflict_accepted: 0, conflict_merged: 0,
+          total: 0
+        };
+      }
+
+      const db = strapi.db.connection;
+      const results = await db('sync_queue')
+        .where({ ship_id: shipId })
+        .select('status')
+        .count('* as count')
+        .groupBy('status');
+
+      const stats: any = {
+        pending: 0, syncing: 0, synced: 0, failed: 0,
+        conflict_pending: 0, conflict_rejected: 0, conflict_accepted: 0, conflict_merged: 0,
+        total: 0
+      };
+
+      for (const row of results) {
+        const status = row.status as string;
+        const count = parseInt(row.count as string) || 0;
+        stats[status] = count;
+        stats.total += count;
+      }
+
+      return stats;
     },
 
     /**

@@ -149,10 +149,21 @@ export default ({ strapi: strapiParam }: { strapi: any }) => {
      * Mark ships as offline if not seen recently
      */
     async markOfflineShips(thresholdMinutes: number = 5): Promise<number> {
-      if (!strapi || !strapi.db) {
-        console.error('[ShipTracker] Strapi instance not available');
+      // Skip if strapi is shutting down or db is not available
+      if (!strapi || !strapi.db || (strapi as any)._isShuttingDown) {
         return 0;
       }
+
+      // Check if connection is still valid
+      try {
+        const connection = strapi.db.connection;
+        if (!connection || connection.destroyed) {
+          return 0;
+        }
+      } catch {
+        return 0;
+      }
+
       try {
         const threshold = new Date(Date.now() - thresholdMinutes * 60 * 1000);
 
@@ -169,7 +180,7 @@ export default ({ strapi: strapiParam }: { strapi: any }) => {
         for (const ship of staleShips) {
           await strapi.db.query(CONTENT_TYPE).update({
             where: { id: ship.id },
-            data: { 
+            data: {
               connectivityStatus: 'offline',
               updatedAt: new Date(),
             },
@@ -184,7 +195,10 @@ export default ({ strapi: strapiParam }: { strapi: any }) => {
         return count;
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : 'Unknown error';
-        if (strapi && strapi.log) {
+        // Use debug level for connection errors (expected during shutdown)
+        if (strapi?.log?.debug && (message.includes('connection') || message.includes('Connection'))) {
+          strapi.log.debug(`[ShipTracker] Cleanup skipped (connection unavailable)`);
+        } else if (strapi?.log?.error) {
           strapi.log.error(`[ShipTracker] Failed to mark offline ships: ${message}`);
         }
         return 0;

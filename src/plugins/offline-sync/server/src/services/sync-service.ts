@@ -297,9 +297,15 @@ export default ({ strapi }: { strapi: any }) => ({
 
     const { messageId, contentType, contentId: masterDocumentId, data, operation } = message;
 
-    // Handle conflict-rejected notifications from master
+    // Handle conflict-rejected notifications from master (conflict detected)
     if (operation === 'conflict-rejected') {
       await this.handleConflictNotification(message);
+      return;
+    }
+
+    // Handle conflict resolution notifications from master (admin resolved conflict)
+    if (operation === 'conflict-resolved') {
+      await this.handleConflictResolution(message);
       return;
     }
 
@@ -498,10 +504,148 @@ export default ({ strapi }: { strapi: any }) => ({
         timestamp: new Date().toISOString(),
       });
 
-      strapi.log.info(`[Sync] Conflict marked locally. Awaiting resolution from master admin.`);
+      strapi.log.info(`[Sync] Conflict marked locally as PENDING. Awaiting resolution from master admin.`);
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       strapi.log.error(`[Sync] Failed to handle conflict notification: ${errorMessage}`);
+    }
+  },
+
+  /**
+   * Handle conflict resolution notification from master (replica side)
+   * Called when master admin resolves a conflict
+   */
+  async handleConflictResolution(message: any): Promise<void> {
+    const config = strapi.config.get('plugin::offline-sync', {});
+    const {
+      shipId,
+      contentType,
+      contentId,
+      replicaDocumentId,
+      conflictId,
+      resolution, // 'keep-ship', 'keep-master', 'merge'
+      resolvedData,
+      resolvedBy,
+    } = message;
+
+    // Only process if this notification is for our ship
+    if (shipId !== config.shipId) {
+      strapi.log.debug(`[Sync] Ignoring conflict resolution for different ship: ${shipId}`);
+      return;
+    }
+
+    strapi.log.info(`[Sync] ✅ CONFLICT RESOLUTION received from master`);
+    strapi.log.info(`[Sync]   Content: ${contentType} / ${replicaDocumentId}`);
+    strapi.log.info(`[Sync]   Conflict ID: ${conflictId}`);
+    strapi.log.info(`[Sync]   Resolution: ${resolution}`);
+    strapi.log.info(`[Sync]   Resolved by: ${resolvedBy || 'admin'}`);
+
+    const syncQueue = strapi.plugin('offline-sync').service('sync-queue');
+
+    try {
+      switch (resolution) {
+        case 'keep-ship':
+          // Ship's version was accepted - our changes were applied to master
+          await syncQueue.markConflictAccepted({
+            contentType,
+            contentId: replicaDocumentId,
+            shipId: config.shipId,
+            conflictId,
+          });
+          strapi.log.info(`[Sync] 🎉 Your changes were ACCEPTED and applied to master!`);
+          break;
+
+        case 'keep-master':
+          // Master's version was kept - our changes were rejected
+          await syncQueue.markConflictRejected({
+            contentType,
+            contentId: replicaDocumentId,
+            shipId: config.shipId,
+            conflictId,
+            reason: 'Admin chose to keep master version',
+          });
+
+          // Optionally apply master's resolved data to local
+          if (resolvedData) {
+            try {
+              const documentMapping = strapi.plugin('offline-sync').service('document-mapping');
+              const localMapping = await documentMapping.findByMasterDocumentId(
+                config.shipId,
+                contentType,
+                contentId
+              );
+
+              if (localMapping?.replicaDocumentId) {
+                (strapi as any)._offlineSyncFromMaster = true;
+                await strapi.documents(contentType).update({
+                  documentId: localMapping.replicaDocumentId,
+                  data: this.cleanSyncData(resolvedData),
+                  status: 'published',
+                });
+                (strapi as any)._offlineSyncFromMaster = false;
+                strapi.log.info(`[Sync] Local content updated with master's version`);
+              }
+            } catch (updateError: any) {
+              strapi.log.debug(`[Sync] Could not update local content: ${updateError.message}`);
+            }
+          }
+          strapi.log.warn(`[Sync] ❌ Your changes were REJECTED. Master version was kept.`);
+          break;
+
+        case 'merge':
+          // Changes were merged
+          await syncQueue.markConflictMerged({
+            contentType,
+            contentId: replicaDocumentId,
+            shipId: config.shipId,
+            conflictId,
+            mergeDetails: 'Changes were merged by admin',
+          });
+
+          // Apply merged data to local
+          if (resolvedData) {
+            try {
+              const documentMapping = strapi.plugin('offline-sync').service('document-mapping');
+              const localMapping = await documentMapping.findByMasterDocumentId(
+                config.shipId,
+                contentType,
+                contentId
+              );
+
+              if (localMapping?.replicaDocumentId) {
+                (strapi as any)._offlineSyncFromMaster = true;
+                await strapi.documents(contentType).update({
+                  documentId: localMapping.replicaDocumentId,
+                  data: this.cleanSyncData(resolvedData),
+                  status: 'published',
+                });
+                (strapi as any)._offlineSyncFromMaster = false;
+                strapi.log.info(`[Sync] Local content updated with merged version`);
+              }
+            } catch (updateError: any) {
+              strapi.log.debug(`[Sync] Could not update local content: ${updateError.message}`);
+            }
+          }
+          strapi.log.info(`[Sync] 🔀 Changes were MERGED by admin.`);
+          break;
+
+        default:
+          strapi.log.warn(`[Sync] Unknown resolution type: ${resolution}`);
+      }
+
+      // Emit an event for the admin UI
+      strapi.eventHub?.emit('offline-sync.conflict-resolved', {
+        shipId: config.shipId,
+        contentType,
+        contentId: replicaDocumentId,
+        conflictId,
+        resolution,
+        timestamp: new Date().toISOString(),
+      });
+
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      strapi.log.error(`[Sync] Failed to handle conflict resolution: ${errorMessage}`);
     }
   },
 

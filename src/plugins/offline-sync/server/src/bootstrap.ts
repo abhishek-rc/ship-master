@@ -463,6 +463,9 @@ export default ({ strapi }: { strapi: any }) => {
 
   // Register graceful shutdown
   const gracefulShutdown = async () => {
+    // Set global shutdown flag so services know to skip operations
+    (strapi as any)._isShuttingDown = true;
+    
     strapi.log.info('[OfflineSync] Shutting down...');
     for (const cleanup of cleanupFunctions) {
       try {

@@ -21,7 +21,7 @@ export default ({ strapi }: { strapi: any }) => {
 
       const db = strapi.db.connection;
       tableExists = await db.schema.hasTable('conflict_logs');
-      return tableExists;
+      return tableExists ?? false;
     },
 
     /**
@@ -210,7 +210,44 @@ export default ({ strapi }: { strapi: any }) => {
           resolved_by: 'admin',
         });
 
-        return { success: true, conflictId: id, strategy, contentType, documentId };
+        // Get the resolved document data to send to ship
+        let resolvedData = null;
+        try {
+          const doc = await strapi.documents(contentType).findOne({ documentId });
+          if (doc) {
+            // Clean the data before sending
+            const syncService = strapi.plugin('offline-sync').service('sync-service');
+            resolvedData = syncService.cleanSyncData(doc);
+          }
+        } catch (e) {
+          // Non-critical, continue without resolved data
+        }
+
+        // Send resolution notification to ship via Kafka
+        try {
+          const kafkaProducer = strapi.plugin('offline-sync').service('kafka-producer');
+          if (kafkaProducer.isConnected()) {
+            await kafkaProducer.sendToShips({
+              messageId: `conflict-resolved-${id}-${Date.now()}`,
+              shipId: shipId,
+              timestamp: new Date().toISOString(),
+              operation: 'conflict-resolved',
+              contentType,
+              contentId: documentId,
+              replicaDocumentId: existingMapping?.replicaDocumentId || null,
+              conflictId: id,
+              resolution: strategy,
+              resolvedData: resolvedData,
+              resolvedBy: 'admin',
+            });
+            strapi.log.info(`[Conflict] 📤 Sent resolution notification to ship ${shipId}`);
+          }
+        } catch (kafkaError: any) {
+          // Non-critical, log but don't fail
+          strapi.log.warn(`[Conflict] Could not notify ship of resolution: ${kafkaError.message}`);
+        }
+
+        return { success: true, conflictId: id, strategy, contentType, documentId, shipId };
 
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : 'Unknown error';
