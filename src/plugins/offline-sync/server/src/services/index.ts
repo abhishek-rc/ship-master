@@ -9,6 +9,7 @@ import connectivityMonitor from './connectivity-monitor';
 import messageTracker from './message-tracker';
 import deadLetter from './dead-letter';
 import documentMapping from './document-mapping';
+import initialSync from './initial-sync';
 
 export default {
   'sync-queue': syncQueue,
@@ -22,5 +23,6 @@ export default {
   'message-tracker': messageTracker,
   'dead-letter': deadLetter,
   'document-mapping': documentMapping,
+  'initial-sync': initialSync,
 };
 
