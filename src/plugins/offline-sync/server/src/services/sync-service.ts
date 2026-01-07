@@ -191,16 +191,37 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
           } else {
             strapi.log.debug(`[Sync] Delete skipped - no mapping for ${replicaDocumentId}`);
           }
-        } else if (operation === 'create' || !masterDocumentId) {
-          // Create new document - no conflict possible
-          const created = await strapi.documents(contentType).create({
+        } else if (operation === 'create' && masterDocumentId && message.locale) {
+          // SPECIAL CASE: Adding a new locale to an existing document
+          // Mapping exists (masterDocumentId found) + locale specified = new locale for existing doc
+          strapi.log.info(`[Sync] 🌐 Adding locale ${message.locale} to existing ${contentType} (master: ${masterDocumentId})`);
+          
+          await strapi.documents(contentType).update({
+            documentId: masterDocumentId,
+            locale: message.locale,
             data: cleanedData,
             status: 'published',
           });
+          
+          strapi.log.info(`[Sync] ✅ Added locale ${message.locale} to ${contentType}: ${replicaDocumentId} -> ${masterDocumentId}`);
+          
+        } else if (operation === 'create' || !masterDocumentId) {
+          // Create new document - no mapping exists, truly new content
+          const createOptions: any = {
+            data: cleanedData,
+            status: 'published',
+          };
+          
+          // Include locale if specified
+          if (message.locale) {
+            createOptions.locale = message.locale;
+          }
+          
+          const created = await strapi.documents(contentType).create(createOptions);
 
           if (created?.documentId) {
             await documentMapping.setMapping(shipId, contentType, replicaDocumentId, created.documentId);
-            strapi.log.info(`[Sync] ✅ Created ${contentType}: ${replicaDocumentId} -> ${created.documentId}`);
+            strapi.log.info(`[Sync] ✅ Created ${contentType}${message.locale ? ` [${message.locale}]` : ''}: ${replicaDocumentId} -> ${created.documentId}`);
 
             // Send create ACK back to ship so it saves the reverse mapping
             // This allows Master's future updates to be applied correctly on Replica
@@ -429,26 +450,40 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
             }
 
             // Apply master update to local and publish
-            await strapi.documents(contentType).update({
+            const updateOptions: any = {
               documentId: localMapping.replicaDocumentId,
               data: cleanedData,
               status: 'published',
-            });
+            };
+            
+            // Include locale if specified (for locale-specific updates)
+            if (message.locale) {
+              updateOptions.locale = message.locale;
+            }
+            
+            await strapi.documents(contentType).update(updateOptions);
 
             // Update mapping timestamp
             await documentMapping.setMapping(shipId, contentType, localMapping.replicaDocumentId, masterDocumentId);
 
-            strapi.log.info(`[Sync] 📥 Updated local ${contentType} (${localMapping.replicaDocumentId}) from master`);
+            strapi.log.info(`[Sync] 📥 Updated local ${contentType}${message.locale ? ` [${message.locale}]` : ''} (${localMapping.replicaDocumentId}) from master`);
           } else {
             // Local doc was deleted, recreate it
-            const created = await strapi.documents(contentType).create({
+            const recreateOptions: any = {
               data: cleanedData,
               status: 'published',
-            });
+            };
+            
+            // Include locale if specified
+            if (message.locale) {
+              recreateOptions.locale = message.locale;
+            }
+            
+            const created = await strapi.documents(contentType).create(recreateOptions);
 
             if (created?.documentId) {
               await documentMapping.setMapping(shipId, contentType, created.documentId, masterDocumentId);
-              strapi.log.info(`[Sync] 📥 Recreated ${contentType}: master ${masterDocumentId} -> local ${created.documentId}`);
+              strapi.log.info(`[Sync] 📥 Recreated ${contentType}${message.locale ? ` [${message.locale}]` : ''}: master ${masterDocumentId} -> local ${created.documentId}`);
 
               // Send mapping ACK to master so it knows the relationship
               const kafkaProducer = strapi.plugin('offline-sync').service('kafka-producer');
@@ -463,10 +498,17 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
           }
         } else if (operation !== 'delete') {
           // No local copy exists - create new document (but NOT for delete operations)
-          const created = await strapi.documents(contentType).create({
+          const createOptions: any = {
             data: cleanedData,
             status: 'published',
-          });
+          };
+          
+          // Include locale if specified
+          if (message.locale) {
+            createOptions.locale = message.locale;
+          }
+          
+          const created = await strapi.documents(contentType).create(createOptions);
 
           if (created?.documentId) {
             await documentMapping.setMapping(shipId, contentType, created.documentId, masterDocumentId);
