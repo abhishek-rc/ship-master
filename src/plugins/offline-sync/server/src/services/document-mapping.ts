@@ -1,6 +1,7 @@
 /**
  * Document Mapping Service
  * Maps replica documentIds to master documentIds for proper sync
+ * Uses strapi.db.query() for reliable async context operations
  */
 
 const CONTENT_TYPE = 'plugin::offline-sync.document-mapping';
@@ -16,159 +17,219 @@ interface DocumentMapping {
     updatedAt: Date;
 }
 
-export default ({ strapi }: { strapi: any }) => ({
-    /**
-     * Get the full mapping record (includes timestamps for conflict detection)
-     */
-    async getMapping(
-        shipId: string,
-        contentType: string,
-        replicaDocumentId: string
-    ): Promise<DocumentMapping | null> {
+export default ({ strapi: strapiInstance }: { strapi: any }) => {
+    // Explicitly capture strapi in closure to ensure it's available in async callbacks
+    const strapi = strapiInstance;
+
+    // Helper to generate a document ID (Strapi 5 format)
+    const generateDocumentId = () => {
+        return `${Date.now().toString(36)}${Math.random().toString(36).substr(2, 9)}`;
+    };
+
+    // Helper to check if DB connection is available
+    const isDbAvailable = (): boolean => {
+        if (!strapi?.db) return false;
+        if ((strapi as any)._isShuttingDown) return false;
         try {
-            const mapping = await strapi.documents(CONTENT_TYPE).findFirst({
-                filters: {
-                    shipId: { $eq: shipId },
-                    contentType: { $eq: contentType },
-                    replicaDocumentId: { $eq: replicaDocumentId },
-                },
-            });
-            return mapping as DocumentMapping | null;
-        } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : 'Unknown error';
-            strapi.log.error(`[DocumentMapping] Failed to get mapping: ${message}`);
-            return null;
-        }
-    },
-
-    /**
-     * Get master documentId for a replica documentId
-     */
-    async getMasterDocumentId(
-        shipId: string,
-        contentType: string,
-        replicaDocumentId: string
-    ): Promise<string | null> {
-        const mapping = await this.getMapping(shipId, contentType, replicaDocumentId);
-        return mapping?.masterDocumentId || null;
-    },
-
-    /**
-     * Create or update a document mapping
-     */
-    async setMapping(
-        shipId: string,
-        contentType: string,
-        replicaDocumentId: string,
-        masterDocumentId: string
-    ): Promise<DocumentMapping | null> {
-        try {
-            // Check if mapping exists
-            const existing = await strapi.documents(CONTENT_TYPE).findFirst({
-                filters: {
-                    shipId: { $eq: shipId },
-                    contentType: { $eq: contentType },
-                    replicaDocumentId: { $eq: replicaDocumentId },
-                },
-            });
-
-            if (existing) {
-                // Update existing mapping
-                const updated = await strapi.documents(CONTENT_TYPE).update({
-                    documentId: existing.documentId,
-                    data: { masterDocumentId },
-                });
-                return updated as DocumentMapping;
-            }
-
-            // Create new mapping
-            const created = await strapi.documents(CONTENT_TYPE).create({
-                data: {
-                    shipId,
-                    contentType,
-                    replicaDocumentId,
-                    masterDocumentId,
-                },
-            });
-
-            strapi.log.debug(`[DocumentMapping] Created mapping: ${replicaDocumentId} -> ${masterDocumentId}`);
-            return created as DocumentMapping;
-        } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : 'Unknown error';
-            strapi.log.error(`[DocumentMapping] Failed to set mapping: ${message}`);
-            return null;
-        }
-    },
-
-    /**
-     * Delete a document mapping
-     */
-    async deleteMapping(
-        shipId: string,
-        contentType: string,
-        replicaDocumentId: string
-    ): Promise<boolean> {
-        try {
-            const existing = await strapi.documents(CONTENT_TYPE).findFirst({
-                filters: {
-                    shipId: { $eq: shipId },
-                    contentType: { $eq: contentType },
-                    replicaDocumentId: { $eq: replicaDocumentId },
-                },
-            });
-
-            if (existing) {
-                await strapi.documents(CONTENT_TYPE).delete({
-                    documentId: existing.documentId,
-                });
-                return true;
-            }
-
-            return false;
-        } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : 'Unknown error';
-            strapi.log.error(`[DocumentMapping] Failed to delete mapping: ${message}`);
+            const connection = strapi.db.connection;
+            return connection && !connection.destroyed;
+        } catch {
             return false;
         }
-    },
+    };
 
-    /**
-     * Get all mappings for a ship
-     */
-    async getMappingsForShip(shipId: string): Promise<DocumentMapping[]> {
-        try {
-            const mappings = await strapi.documents(CONTENT_TYPE).findMany({
-                filters: { shipId: { $eq: shipId } },
-            });
-            return mappings as DocumentMapping[];
-        } catch (error: unknown) {
-            return [];
-        }
-    },
+    return {
+        /**
+         * Get the full mapping record (includes timestamps for conflict detection)
+         */
+        async getMapping(
+            shipId: string,
+            contentType: string,
+            replicaDocumentId: string
+        ): Promise<DocumentMapping | null> {
+            if (!isDbAvailable()) {
+                return null;
+            }
 
-    /**
-     * Find mapping by master documentId (reverse lookup)
-     * Used when replica receives updates from master
-     */
-    async findByMasterDocumentId(
-        shipId: string,
-        contentType: string,
-        masterDocumentId: string
-    ): Promise<DocumentMapping | null> {
-        try {
-            const mapping = await strapi.documents(CONTENT_TYPE).findFirst({
-                filters: {
-                    shipId: { $eq: shipId },
-                    contentType: { $eq: contentType },
-                    masterDocumentId: { $eq: masterDocumentId },
-                },
-            });
-            return mapping as DocumentMapping | null;
-        } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : 'Unknown error';
-            strapi.log.error(`[DocumentMapping] Failed to find by master ID: ${message}`);
-            return null;
-        }
-    },
-});
+            try {
+                const mapping = await strapi.db.query(CONTENT_TYPE).findOne({
+                    where: {
+                        shipId,
+                        contentType,
+                        replicaDocumentId,
+                    },
+                });
+                return mapping as DocumentMapping | null;
+            } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : 'Unknown error';
+                if (strapi?.log && !message.includes('connection')) {
+                    strapi.log.error(`[DocumentMapping] Failed to get mapping: ${message}`);
+                }
+                return null;
+            }
+        },
+
+        /**
+         * Get master documentId for a replica documentId
+         */
+        async getMasterDocumentId(
+            shipId: string,
+            contentType: string,
+            replicaDocumentId: string
+        ): Promise<string | null> {
+            const mapping = await this.getMapping(shipId, contentType, replicaDocumentId);
+            return mapping?.masterDocumentId || null;
+        },
+
+        /**
+         * Create or update a document mapping
+         */
+        async setMapping(
+            shipId: string,
+            contentType: string,
+            replicaDocumentId: string,
+            masterDocumentId: string
+        ): Promise<DocumentMapping | null> {
+            if (!isDbAvailable()) {
+                return null;
+            }
+
+            try {
+                // Check if mapping exists
+                const existing = await strapi.db.query(CONTENT_TYPE).findOne({
+                    where: {
+                        shipId,
+                        contentType,
+                        replicaDocumentId,
+                    },
+                });
+
+                const now = new Date();
+
+                if (existing) {
+                    // Update existing mapping
+                    const updated = await strapi.db.query(CONTENT_TYPE).update({
+                        where: { id: existing.id },
+                        data: { 
+                            masterDocumentId,
+                            updatedAt: now,
+                        },
+                    });
+                    return updated as DocumentMapping;
+                }
+
+                // Create new mapping
+                const created = await strapi.db.query(CONTENT_TYPE).create({
+                    data: {
+                        documentId: generateDocumentId(),
+                        shipId,
+                        contentType,
+                        replicaDocumentId,
+                        masterDocumentId,
+                        createdAt: now,
+                        updatedAt: now,
+                    },
+                });
+
+                if (strapi?.log) {
+                    strapi.log.debug(`[DocumentMapping] Created mapping: ${replicaDocumentId} -> ${masterDocumentId}`);
+                }
+                return created as DocumentMapping;
+            } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : 'Unknown error';
+                if (strapi?.log && !message.includes('connection')) {
+                    strapi.log.error(`[DocumentMapping] Failed to set mapping: ${message}`);
+                }
+                return null;
+            }
+        },
+
+        /**
+         * Delete a document mapping
+         */
+        async deleteMapping(
+            shipId: string,
+            contentType: string,
+            replicaDocumentId: string
+        ): Promise<boolean> {
+            if (!isDbAvailable()) {
+                return false;
+            }
+
+            try {
+                const existing = await strapi.db.query(CONTENT_TYPE).findOne({
+                    where: {
+                        shipId,
+                        contentType,
+                        replicaDocumentId,
+                    },
+                });
+
+                if (existing) {
+                    await strapi.db.query(CONTENT_TYPE).delete({
+                        where: { id: existing.id },
+                    });
+                    return true;
+                }
+
+                return false;
+            } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : 'Unknown error';
+                if (strapi?.log && !message.includes('connection')) {
+                    strapi.log.error(`[DocumentMapping] Failed to delete mapping: ${message}`);
+                }
+                return false;
+            }
+        },
+
+        /**
+         * Get all mappings for a ship
+         */
+        async getMappingsForShip(shipId: string): Promise<DocumentMapping[]> {
+            if (!isDbAvailable()) {
+                return [];
+            }
+
+            try {
+                const mappings = await strapi.db.query(CONTENT_TYPE).findMany({
+                    where: { shipId },
+                });
+                return mappings as DocumentMapping[];
+            } catch (error: unknown) {
+                return [];
+            }
+        },
+
+        /**
+         * Find mapping by master documentId (reverse lookup)
+         * Used when replica receives updates from master
+         */
+        async findByMasterDocumentId(
+            shipId: string,
+            contentType: string,
+            masterDocumentId: string
+        ): Promise<DocumentMapping | null> {
+            if (!isDbAvailable()) {
+                return null;
+            }
+
+            try {
+                const mapping = await strapi.db.query(CONTENT_TYPE).findOne({
+                    where: {
+                        shipId,
+                        contentType,
+                        masterDocumentId,
+                    },
+                });
+                return mapping as DocumentMapping | null;
+            } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : 'Unknown error';
+                if (strapi?.log && !message.includes('connection')) {
+                    strapi.log.error(`[DocumentMapping] Failed to find by master ID: ${message}`);
+                }
+                return null;
+            }
+        },
+    };
+};
 

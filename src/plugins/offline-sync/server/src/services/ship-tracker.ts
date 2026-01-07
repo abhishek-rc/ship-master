@@ -45,6 +45,22 @@ export default ({ strapi: strapiParam }: { strapi: any }) => {
         return null;
       }
 
+      // Check if shutting down or connection unavailable
+      if ((strapi as any)._isShuttingDown) {
+        return null;
+      }
+
+      // Check if connection is still valid
+      try {
+        const connection = strapi.db.connection;
+        if (!connection || connection.destroyed) {
+          strapi.log?.debug('[ShipTracker] DB connection unavailable for registerShip');
+          return null;
+        }
+      } catch {
+        return null;
+      }
+
       try {
         const now = new Date();
 

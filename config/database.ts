@@ -40,7 +40,13 @@ export default ({ env }) => {
         },
         schema: env('DATABASE_SCHEMA', 'public'),
       },
-      pool: { min: env.int('DATABASE_POOL_MIN', 2), max: env.int('DATABASE_POOL_MAX', 10) },
+      // Increased pool size for offline-sync plugin with Kafka consumers
+      pool: { 
+        min: env.int('DATABASE_POOL_MIN', 5), 
+        max: env.int('DATABASE_POOL_MAX', 25),
+        acquireTimeoutMillis: env.int('DATABASE_POOL_ACQUIRE_TIMEOUT', 30000),
+        idleTimeoutMillis: env.int('DATABASE_POOL_IDLE_TIMEOUT', 30000),
+      },
     },
     sqlite: {
       connection: {
