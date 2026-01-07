@@ -465,7 +465,7 @@ export default ({ strapi }: { strapi: any }) => {
   const gracefulShutdown = async () => {
     // Set global shutdown flag so services know to skip operations
     (strapi as any)._isShuttingDown = true;
-    
+
     strapi.log.info('[OfflineSync] Shutting down...');
     for (const cleanup of cleanupFunctions) {
       try {
@@ -518,9 +518,25 @@ export default ({ strapi }: { strapi: any }) => {
       return result;
     }
 
-    // Get document ID
-    const documentId = result?.documentId || result?.id || context.params?.documentId;
-    if (!documentId) {
+    // Get document ID - handle various result formats
+    let documentId: string | undefined;
+
+    if (result?.documentId) {
+      documentId = result.documentId;
+    } else if (result?.id && typeof result.id === 'string') {
+      documentId = result.id;
+    } else if (context.params?.documentId && typeof context.params.documentId === 'string') {
+      documentId = context.params.documentId;
+    }
+
+    // Skip if no valid documentId (e.g., bulk operations, failed deletes)
+    if (!documentId || typeof documentId !== 'string' || documentId.length === 0) {
+      return result;
+    }
+
+    // Skip bulk operations (when result is an array or count object)
+    if (Array.isArray(result) || (result && typeof result === 'object' && 'count' in result)) {
+      strapi.log.debug(`[Sync] Skipping bulk operation for ${uid}`);
       return result;
     }
 

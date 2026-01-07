@@ -407,3 +407,24 @@ netstat -an | findstr 9092
 - **This guide:** Same network (testing/local)
 - **Production guide:** Internet connection (ships at sea)
 
+---
+
+## 🔧 Troubleshooting
+
+### Populate Cache Error
+
+If you see this error when creating/updating content:
+```
+duplicate key value violates unique constraint "caches_hash_idx"
+```
+
+**This is a Strapi internal race condition** when concurrent operations happen (Admin UI + Kafka sync).
+
+**Solution:** Add this to your `.env` file:
+```env
+# Disable Strapi's populate cache to prevent race conditions with Kafka sync
+STRAPI_DISABLE_POPULATE_CACHE=true
+```
+
+**Impact:** Minimal performance impact. The cache is just an optimization for populated relations.
+
