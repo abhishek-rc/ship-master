@@ -171,6 +171,27 @@ export default ({ strapi }: { strapi: any }) => {
     const connectivityMonitor = strapi.plugin('offline-sync').service('connectivity-monitor');
     connectivityMonitor.startMonitoring(pluginConfig.sync.connectivityCheckInterval);
 
+    // Register reconnection callback for immediate push
+    connectivityMonitor.onReconnect(async () => {
+      strapi.log.info('[OfflineSync] 🔄 Connection restored - triggering immediate push...');
+      // Use setImmediate to avoid blocking the connectivity check
+      setImmediate(async () => {
+        try {
+          const syncService = strapi.plugin('offline-sync').service('sync-service');
+          const syncQueue = strapi.plugin('offline-sync').service('sync-queue');
+
+          const pendingCount = await syncQueue.getPending(pluginConfig.shipId);
+          if (pendingCount > 0) {
+            strapi.log.info(`[OfflineSync] 📤 Pushing ${pendingCount} pending items after reconnection...`);
+            const result = await syncService.push();
+            strapi.log.info(`[OfflineSync] ✅ Reconnection push complete: ${result.pushed} pushed, ${result.failed} failed`);
+          }
+        } catch (error: any) {
+          strapi.log.error(`[OfflineSync] Reconnection push error: ${error.message}`);
+        }
+      });
+    });
+
     // Add monitor stop to cleanup
     cleanupFunctions.push(() => {
       connectivityMonitor.stopMonitoring();
@@ -270,6 +291,72 @@ export default ({ strapi }: { strapi: any }) => {
       if (heartbeatIntervalId) {
         clearInterval(heartbeatIntervalId);
         heartbeatIntervalId = null;
+      }
+    });
+
+    // ========================================================
+    // AUTO-PUSH: Periodic check for pending items + push on reconnect
+    // This fixes the issue where pending items aren't pushed
+    // until new changes are made
+    // ========================================================
+    const AUTO_PUSH_INTERVAL_MS = pluginConfig.sync.autoPushInterval || 30000; // Default 30 seconds
+    let autoPushIntervalId: NodeJS.Timeout | null = null;
+    let wasOffline = false; // Track previous connectivity state
+
+    const autoPushCheck = async () => {
+      try {
+        const syncQueue = strapi.plugin('offline-sync').service('sync-queue');
+
+        // Check if there are pending items
+        const pendingItems = await syncQueue.getPending(pluginConfig.shipId);
+        if (pendingItems === 0) {
+          return; // Nothing to push
+        }
+
+        // Check connectivity
+        const { isOnline } = await connectivityMonitor.checkConnectivity();
+
+        if (isOnline) {
+          // If we were offline and now online, log reconnection
+          if (wasOffline) {
+            strapi.log.info(`[AutoPush] 🔄 Reconnected! Found ${pendingItems} pending items to push`);
+            wasOffline = false;
+          }
+
+          // Push pending items
+          strapi.log.info(`[AutoPush] 📤 Pushing ${pendingItems} pending items...`);
+          await executePush();
+        } else {
+          // Track that we're offline
+          if (!wasOffline) {
+            strapi.log.info(`[AutoPush] 📴 Offline - ${pendingItems} items queued for later`);
+            wasOffline = true;
+          }
+        }
+      } catch (error: any) {
+        strapi.log.debug(`[AutoPush] Check error: ${error.message}`);
+      }
+    };
+
+    // Start auto-push interval
+    const startAutoPush = () => {
+      // Do an initial check after startup (wait for Kafka to connect)
+      setTimeout(async () => {
+        await autoPushCheck();
+      }, 10000); // Wait 10s after startup
+
+      // Schedule periodic checks
+      autoPushIntervalId = setInterval(autoPushCheck, AUTO_PUSH_INTERVAL_MS);
+      strapi.log.info(`[AutoPush] ✅ Enabled (interval: ${AUTO_PUSH_INTERVAL_MS / 1000}s)`);
+    };
+
+    startAutoPush();
+
+    // Add auto-push cleanup
+    cleanupFunctions.push(() => {
+      if (autoPushIntervalId) {
+        clearInterval(autoPushIntervalId);
+        autoPushIntervalId = null;
       }
     });
 

@@ -1,6 +1,8 @@
 export default ({ strapi }: { strapi: any }) => {
   let isOnline = false;
+  let wasOnline = false; // Track previous state for detecting reconnection
   let checkInterval: NodeJS.Timeout | null = null;
+  let onReconnectCallback: (() => void) | null = null;
 
   return {
     /**
@@ -32,32 +34,57 @@ export default ({ strapi }: { strapi: any }) => {
     },
 
     /**
+     * Register a callback to be called when connectivity is restored
+     */
+    onReconnect(callback: () => void): void {
+      onReconnectCallback = callback;
+    },
+
+    /**
      * Check connectivity to master
      */
-    async checkConnectivity(): Promise<{ isOnline: boolean; error?: string }> {
+    async checkConnectivity(): Promise<{ isOnline: boolean; wasReconnected: boolean; error?: string }> {
       // In Strapi 5, use strapi.config.get with plugin:: namespace
       const config = strapi.config.get('plugin::offline-sync', {});
-      
+
       if (config.mode !== 'replica') {
-        return { isOnline: true };
+        return { isOnline: true, wasReconnected: false };
       }
+
+      const previousState = isOnline;
 
       try {
         const kafkaProducer = strapi.plugin('offline-sync').service('kafka-producer');
-        
+
         // First, try to connect if not connected
         if (!kafkaProducer.isConnected()) {
           await kafkaProducer.connect();
         }
-        
+
         // Then do an actual health check to verify broker is reachable
         const healthy = await kafkaProducer.healthCheck();
         isOnline = healthy;
-        
-        return { isOnline };
+
+        // Detect reconnection (was offline, now online)
+        const wasReconnected = !wasOnline && isOnline;
+        wasOnline = isOnline;
+
+        // Call reconnect callback if we just reconnected
+        if (wasReconnected && onReconnectCallback) {
+          strapi.log.info('[Connectivity] 🔄 Reconnected to master!');
+          try {
+            onReconnectCallback();
+          } catch (callbackError: any) {
+            strapi.log.debug(`[Connectivity] Reconnect callback error: ${callbackError.message}`);
+          }
+        }
+
+        return { isOnline, wasReconnected };
       } catch (error: any) {
+        const wasReconnected = false;
         isOnline = false;
-        return { isOnline: false, error: error.message };
+        wasOnline = false;
+        return { isOnline: false, wasReconnected, error: error.message };
       }
     },
 
@@ -66,6 +93,13 @@ export default ({ strapi }: { strapi: any }) => {
      */
     isConnected(): boolean {
       return isOnline;
+    },
+
+    /**
+     * Check if we recently reconnected
+     */
+    wasRecentlyOffline(): boolean {
+      return !wasOnline && isOnline;
     },
   };
 };
