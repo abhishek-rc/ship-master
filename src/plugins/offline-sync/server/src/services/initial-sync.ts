@@ -281,7 +281,9 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
     },
 
     /**
-     * Fetch content from master API (handles i18n and non-i18n content types)
+     * Fetch content from master API
+     * Only needs documentIds for mapping - locale doesn't matter for mapping
+     * Locale-specific operations are handled by the sync service
      */
     async fetchFromMaster(
       masterUrl: string,
@@ -297,79 +299,35 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
         headers['Authorization'] = `Bearer ${apiToken}`;
       }
 
-      const allContent: any[] = [];
+      // Fetch without locale filter - we only need documentIds for mapping
+      // The same documentId is used for ALL locales (en, ar, etc.)
+      // Locale-specific sync operations are handled separately by sync-service
+      const url = `${masterUrl}${apiPath}?pagination[pageSize]=1000&populate=*`;
 
-      // Strategy: Try without locale first (works for all content types)
-      // Then try with locales if the content type supports i18n
-
-      // Step 1: Try fetching without locale (simpler, works for non-i18n)
-      const baseUrl = `${masterUrl}${apiPath}?pagination[pageSize]=1000&populate=*`;
-
-      strapi.log.debug(`[InitialSync] Trying base fetch: ${baseUrl}`);
+      strapi.log.debug(`[InitialSync] Fetching: ${url}`);
 
       try {
-        const baseResponse = await fetch(baseUrl, { headers });
+        const response = await fetch(url, { headers });
 
-        if (baseResponse.ok) {
-          const json = await baseResponse.json();
-          const data = json.data || [];
-
-          if (data.length > 0) {
-            strapi.log.info(`[InitialSync] Fetched ${data.length} items (no locale filter)`);
-
-            // Check if content has locale field (i18n enabled)
-            const hasLocale = data[0]?.locale;
-
-            if (hasLocale) {
-              // Content type has i18n - fetch each locale separately
-              strapi.log.debug(`[InitialSync] Content has i18n, fetching by locale...`);
-
-              const locales = ['en', 'ar'];
-              for (const locale of locales) {
-                try {
-                  const localeUrl = `${masterUrl}${apiPath}?pagination[pageSize]=1000&populate=*&locale=${locale}`;
-                  const localeResponse = await fetch(localeUrl, { headers });
-
-                  if (localeResponse.ok) {
-                    const localeJson = await localeResponse.json();
-                    const localeData = localeJson.data || [];
-                    localeData.forEach((item: any) => item._fetchedLocale = locale);
-                    allContent.push(...localeData);
-                    strapi.log.info(`[InitialSync] Fetched ${localeData.length} items for locale ${locale}`);
-                  }
-                } catch (localeError: any) {
-                  strapi.log.debug(`[InitialSync] Locale ${locale} fetch failed: ${localeError.message}`);
-                }
-              }
-            } else {
-              // No i18n - use the data as-is
-              allContent.push(...data);
-            }
-          } else {
-            strapi.log.debug(`[InitialSync] No items found at ${apiPath}`);
-          }
-        } else {
-          strapi.log.warn(`[InitialSync] Failed to fetch ${apiPath}: HTTP ${baseResponse.status}`);
+        if (!response.ok) {
+          strapi.log.warn(`[InitialSync] Failed to fetch ${apiPath}: HTTP ${response.status}`);
+          return [];
         }
+
+        const json = await response.json();
+        const data = json.data || [];
+
+        if (data.length > 0) {
+          strapi.log.info(`[InitialSync] Fetched ${data.length} documents from ${apiPath}`);
+        } else {
+          strapi.log.debug(`[InitialSync] No items found at ${apiPath}`);
+        }
+
+        return data;
       } catch (error: any) {
         strapi.log.warn(`[InitialSync] Error fetching ${apiPath}: ${error.message}`);
+        return [];
       }
-
-      // Deduplicate by documentId only (same doc appears in multiple locales)
-      // Keep first occurrence (English preferred since we fetch en first)
-      const uniqueMap = new Map<string, any>();
-      for (const item of allContent) {
-        const docId = item.documentId || item.id;
-        if (!uniqueMap.has(docId)) {
-          uniqueMap.set(docId, item);
-        }
-      }
-
-      if (allContent.length > 0) {
-        strapi.log.info(`[InitialSync] Deduplicated: ${allContent.length} → ${uniqueMap.size} unique documents`);
-      }
-
-      return Array.from(uniqueMap.values());
     },
 
     /**
