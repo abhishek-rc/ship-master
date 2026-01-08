@@ -65,10 +65,22 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
 
       for (const contentType of contentTypesToSync) {
         try {
+          // Skip single types - they don't need mappings (only one instance exists)
+          if (this.isSingleType(contentType)) {
+            strapi.log.debug(`[InitialSync] Skipping single type: ${contentType}`);
+            continue;
+          }
+
           strapi.log.info(`[InitialSync] Processing ${contentType}...`);
 
-          // Fetch all content from master
+          // Get API path from Strapi's configuration
           const apiPath = this.contentTypeToApiPath(contentType);
+
+          if (!apiPath) {
+            result.errors.push(`${contentType}: Could not determine API path`);
+            continue;
+          }
+
           const masterContent = await this.fetchFromMaster(
             options.masterUrl,
             apiPath,
@@ -259,25 +271,56 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
     },
 
     /**
-     * Convert content type to API path
+     * Convert content type to API path using Strapi's actual configuration
      */
-    contentTypeToApiPath(contentType: string): string {
-      // api::benefit.benefit -> /api/benefits
-      // api::add-on.add-on -> /api/add-ons
-      const parts = contentType.split('.');
-      const name = parts[parts.length - 1];
+    contentTypeToApiPath(contentType: string): string | null {
+      try {
+        const model = strapi.contentTypes[contentType];
 
-      // Simple pluralization (works for most cases)
-      let plural = name;
-      if (name.endsWith('y')) {
-        plural = name.slice(0, -1) + 'ies';
-      } else if (name.endsWith('s') || name.endsWith('x') || name.endsWith('ch') || name.endsWith('sh')) {
-        plural = name + 'es';
-      } else {
-        plural = name + 's';
+        if (!model) {
+          strapi.log.warn(`[InitialSync] Content type not found: ${contentType}`);
+          return null;
+        }
+
+        // Get the plural/singular name from Strapi's configuration
+        const info = model.info || {};
+        const kind = model.kind; // 'singleType' or 'collectionType'
+
+        // For single types, use singular name; for collections, use plural name
+        let routeName: string;
+
+        if (kind === 'singleType') {
+          // Single types use singular name: /api/header, /api/footer
+          routeName = info.singularName || info.displayName?.toLowerCase().replace(/\s+/g, '-');
+        } else {
+          // Collection types use plural name: /api/pages, /api/excursions
+          routeName = info.pluralName || info.singularName + 's';
+        }
+
+        if (!routeName) {
+          // Fallback: extract from content type UID
+          const parts = contentType.split('.');
+          routeName = parts[parts.length - 1];
+        }
+
+        strapi.log.debug(`[InitialSync] ${contentType} → /api/${routeName} (${kind})`);
+        return `/api/${routeName}`;
+      } catch (error: any) {
+        strapi.log.warn(`[InitialSync] Error getting API path for ${contentType}: ${error.message}`);
+        return null;
       }
+    },
 
-      return `/api/${plural}`;
+    /**
+     * Check if content type is a single type (not a collection)
+     */
+    isSingleType(contentType: string): boolean {
+      try {
+        const model = strapi.contentTypes[contentType];
+        return model?.kind === 'singleType';
+      } catch {
+        return false;
+      }
     },
 
     /**

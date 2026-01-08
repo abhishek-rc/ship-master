@@ -141,7 +141,7 @@ export default ({ strapi }: { strapi: any }) => {
 
       try {
         const result = await producer.send({
-          topic: targetTopic,
+          topic: targetTopic as string,
           messages: [{
             key: message.shipId,
             value: JSON.stringify(message),
