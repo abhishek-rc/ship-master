@@ -171,22 +171,22 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
 
                 strapi.log.info(`[InitialSync] Linked: ${masterDocId} → ${localDoc.documentId}`);
               } else {
-                // No local document - create new one
-                const cleanedData = this.cleanSyncData(masterDoc);
-                const docLocale = masterDoc._fetchedLocale || masterDoc.locale || 'en';
+                // No matching local document found
+                // Since master and replica have SAME data, assume same documentId
+                // Just create mapping: masterDocId → masterDocId
 
+                // First verify the document exists locally with same documentId
                 try {
-                  const created = await strapi.documents(contentType).create({
-                    data: cleanedData,
-                    locale: docLocale,
-                    status: 'published',
+                  const existsLocally = await strapi.documents(contentType).findOne({
+                    documentId: masterDocId,
                   });
 
-                  if (created?.documentId) {
+                  if (existsLocally) {
+                    // Document exists with same documentId - create direct mapping
                     await documentMapping.setMapping(
                       shipId,
                       contentType,
-                      created.documentId,
+                      masterDocId, // replicaDocId = masterDocId (same!)
                       masterDocId
                     );
 
@@ -195,16 +195,19 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
                     result.details.push({
                       contentType,
                       masterDocId,
-                      localDocId: created.documentId,
-                      action: `created new (${docLocale})`,
+                      localDocId: masterDocId,
+                      action: 'mapped same-id',
                     });
 
-                    strapi.log.info(`[InitialSync] Created: ${masterDocId} → ${created.documentId} (${docLocale})`);
+                    strapi.log.info(`[InitialSync] Mapped same ID: ${masterDocId}`);
+                  } else {
+                    // Document doesn't exist locally at all - skip (don't create!)
+                    strapi.log.warn(`[InitialSync] No local document found for ${masterDocId}, skipping (no creation)`);
+                    result.errors.push(`${contentType}/${masterDocId}: No local document found`);
                   }
-                } catch (createError: any) {
-                  // Log but don't fail - component issues are common
-                  strapi.log.warn(`[InitialSync] Failed to create ${masterDocId}: ${createError.message}`);
-                  result.errors.push(`${contentType}/${masterDocId}: ${createError.message}`);
+                } catch (findError: any) {
+                  strapi.log.warn(`[InitialSync] Error checking local doc ${masterDocId}: ${findError.message}`);
+                  result.errors.push(`${contentType}/${masterDocId}: ${findError.message}`);
                 }
               }
             } catch (docError: any) {
