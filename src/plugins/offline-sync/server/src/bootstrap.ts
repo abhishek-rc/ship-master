@@ -494,6 +494,64 @@ export default ({ strapi }: { strapi: any }) => {
       return await next();
     }
 
+    // CRITICAL FIX: For delete actions, execute immediately without any processing
+    // Content Manager bulk delete can cause binding issues if we interfere
+    if (action === 'delete') {
+      const result = await next();
+
+      // Only process delete sync AFTER successful completion and only for single items
+      try {
+        const docId = (context.params as any)?.documentId;
+        if (docId && typeof docId === 'string' && result && !Array.isArray(result)) {
+          // Process delete sync in background (non-blocking)
+          setImmediate(async () => {
+            try {
+              if (pluginConfig.mode === 'replica') {
+                const syncQueue = strapi.plugin('offline-sync').service('sync-queue');
+                const locale = (context.params as any)?.locale || null;
+                await syncQueue.enqueue({
+                  shipId: pluginConfig.shipId!,
+                  contentType: uid,
+                  contentId: docId,
+                  operation: 'delete',
+                  localVersion: 0,
+                  data: null,
+                  locale,
+                });
+                strapi.log.info(`[Sync] ✅ Queued delete for ${uid} (${docId})`);
+                if ((strapi as any).offlineSyncPush) {
+                  (strapi as any).offlineSyncPush();
+                }
+              } else if (pluginConfig.mode === 'master') {
+                const kafkaProducer = strapi.plugin('offline-sync').service('kafka-producer');
+                if (kafkaProducer.isConnected()) {
+                  const locale = (context.params as any)?.locale || null;
+                  await kafkaProducer.sendToShips({
+                    messageId: `master-${Date.now()}-${docId}`,
+                    shipId: 'master',
+                    timestamp: new Date().toISOString(),
+                    operation: 'delete',
+                    contentType: uid,
+                    contentId: docId,
+                    version: 0,
+                    data: null,
+                    locale,
+                  });
+                  strapi.log.info(`[Sync] 📤 Published delete for ${uid} (${docId}) to ships`);
+                }
+              }
+            } catch (e) {
+              // Silent fail for sync - delete already succeeded
+            }
+          });
+        }
+      } catch (e) {
+        // Never block delete operation
+      }
+
+      return result;
+    }
+
     // EARLY DETECTION: Skip bulk operations BEFORE calling next()
     // Bulk operations use documentIds (plural) instead of documentId (singular)
     const params = context.params as any;
@@ -540,7 +598,8 @@ export default ({ strapi }: { strapi: any }) => {
 
       // Only track specific actions
       // Note: 'unpublish' is excluded as it would sync empty/null data
-      const trackedActions = ['create', 'update', 'delete', 'publish'];
+      // Note: 'delete' is handled separately at the top of the middleware
+      const trackedActions = ['create', 'update', 'publish'];
       if (!trackedActions.includes(action)) {
         return result;
       }
