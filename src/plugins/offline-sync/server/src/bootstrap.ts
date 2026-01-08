@@ -494,27 +494,16 @@ export default ({ strapi }: { strapi: any }) => {
       return await next();
     }
 
+    // IMPORTANT: Capture documentId from params BEFORE calling next()
+    // This is critical for delete operations where result might be null
+    const paramsDocumentId = (context.params as any)?.documentId;
+    const paramsLocale = (context.params as any)?.locale || null;
+
     // Execute the action first
     const result = await next();
 
     // Wrap ALL our sync logic in try-catch - our middleware should NEVER cause errors
     try {
-
-      // DEFENSIVE: Skip if result is null/undefined (failed operations)
-      if (result === null || result === undefined) {
-        return result;
-      }
-
-      // Skip bulk operations (when result is an array or has count property)
-      if (Array.isArray(result)) {
-        strapi.log.debug(`[Sync] Skipping array result for ${uid}`);
-        return result;
-      }
-
-      if (typeof result === 'object' && ('count' in result || 'deletedCount' in result || 'entries' in result)) {
-        strapi.log.debug(`[Sync] Skipping bulk/count result for ${uid}`);
-        return result;
-      }
 
       // Filter by allowed content types if configured
       if (pluginConfig.contentTypes?.length > 0) {
@@ -524,28 +513,49 @@ export default ({ strapi }: { strapi: any }) => {
       }
 
       // Only track specific actions
-      // Note: 'unpublish' is excluded as it would sync empty/null data
-      // Note: 'unpublish' is excluded as it would sync empty/null data
       const trackedActions = ['create', 'update', 'delete', 'publish'];
       if (!trackedActions.includes(action)) {
         return result;
       }
 
-      // Get document ID - handle various result formats
+      // Get document ID - for DELETE, params is the primary source
       let documentId: string | undefined;
 
-      if (result?.documentId && typeof result.documentId === 'string') {
-        documentId = result.documentId;
-      } else if (result?.id && typeof result.id === 'string') {
-        documentId = result.id;
-      } else if (context.params?.documentId && typeof context.params.documentId === 'string') {
-        documentId = context.params.documentId;
+      // For delete, prioritize params.documentId (result might be null/empty)
+      if (action === 'delete') {
+        if (paramsDocumentId && typeof paramsDocumentId === 'string') {
+          documentId = paramsDocumentId;
+        } else if (result?.documentId && typeof result.documentId === 'string') {
+          documentId = result.documentId;
+        }
+      } else {
+        // For other actions, try result first, then params
+        if (result?.documentId && typeof result.documentId === 'string') {
+          documentId = result.documentId;
+        } else if (result?.id && typeof result.id === 'string') {
+          documentId = result.id;
+        } else if (paramsDocumentId && typeof paramsDocumentId === 'string') {
+          documentId = paramsDocumentId;
+        }
       }
 
-      // Skip if no valid documentId (e.g., bulk operations, failed deletes)
+      // Skip if no valid documentId
       if (!documentId || typeof documentId !== 'string' || documentId.length === 0) {
         strapi.log.debug(`[Sync] Skipping ${action} for ${uid} - no valid documentId`);
         return result;
+      }
+
+      // Skip bulk operations (when result is an array or has count property)
+      // But NOT for delete - delete with valid documentId should proceed
+      if (action !== 'delete') {
+        if (Array.isArray(result)) {
+          strapi.log.debug(`[Sync] Skipping array result for ${uid}`);
+          return result;
+        }
+        if (result && typeof result === 'object' && ('count' in result || 'deletedCount' in result || 'entries' in result)) {
+          strapi.log.debug(`[Sync] Skipping bulk/count result for ${uid}`);
+          return result;
+        }
       }
 
       // Map action to operation
@@ -553,8 +563,8 @@ export default ({ strapi }: { strapi: any }) => {
       if (action === 'create') operation = 'create';
       if (action === 'delete') operation = 'delete';
 
-      // Capture locale for i18n support (important for locale-specific deletes)
-      const locale = (context.params as any)?.locale || (result as any)?.locale || null;
+      // Capture locale for i18n support (use pre-captured paramsLocale or from result)
+      const locale = paramsLocale || (result as any)?.locale || null;
 
       // For publish action, fetch full document data if result is incomplete
       let syncData = result;
