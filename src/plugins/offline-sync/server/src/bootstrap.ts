@@ -494,11 +494,42 @@ export default ({ strapi }: { strapi: any }) => {
       return await next();
     }
 
+    // EARLY DETECTION: Skip bulk operations BEFORE calling next()
+    // Bulk operations use documentIds (plural) instead of documentId (singular)
+    const params = context.params as any;
+    if (params?.documentIds && Array.isArray(params.documentIds)) {
+      // This is a bulk operation - skip entirely and let Strapi handle it
+      strapi.log.debug(`[Sync] Skipping bulk operation for ${uid} (${params.documentIds.length} items)`);
+      return await next();
+    }
+
+    // Also skip if ids (plural) is present
+    if (params?.ids && Array.isArray(params.ids)) {
+      strapi.log.debug(`[Sync] Skipping bulk operation for ${uid} (${params.ids.length} items)`);
+      return await next();
+    }
+
     // Execute the action first
     const result = await next();
 
     // Wrap ALL our sync logic in try-catch - our middleware should NEVER cause errors
     try {
+
+      // DEFENSIVE: Skip if result is null/undefined (failed operations)
+      if (result === null || result === undefined) {
+        return result;
+      }
+
+      // Skip bulk operations (when result is an array or has count property)
+      if (Array.isArray(result)) {
+        strapi.log.debug(`[Sync] Skipping array result for ${uid}`);
+        return result;
+      }
+
+      if (typeof result === 'object' && ('count' in result || 'deletedCount' in result || 'entries' in result)) {
+        strapi.log.debug(`[Sync] Skipping bulk/count result for ${uid}`);
+        return result;
+      }
 
       // Filter by allowed content types if configured
       if (pluginConfig.contentTypes?.length > 0) {
@@ -517,7 +548,7 @@ export default ({ strapi }: { strapi: any }) => {
       // Get document ID - handle various result formats
       let documentId: string | undefined;
 
-      if (result?.documentId) {
+      if (result?.documentId && typeof result.documentId === 'string') {
         documentId = result.documentId;
       } else if (result?.id && typeof result.id === 'string') {
         documentId = result.id;
@@ -527,12 +558,7 @@ export default ({ strapi }: { strapi: any }) => {
 
       // Skip if no valid documentId (e.g., bulk operations, failed deletes)
       if (!documentId || typeof documentId !== 'string' || documentId.length === 0) {
-        return result;
-      }
-
-      // Skip bulk operations (when result is an array or count object)
-      if (Array.isArray(result) || (result && typeof result === 'object' && 'count' in result)) {
-        strapi.log.debug(`[Sync] Skipping bulk operation for ${uid}`);
+        strapi.log.debug(`[Sync] Skipping ${action} for ${uid} - no valid documentId`);
         return result;
       }
 
