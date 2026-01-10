@@ -205,14 +205,30 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
 
           strapi.log.info(`[Sync] ✅ Added locale ${message.locale} to ${contentType}: ${replicaDocumentId} -> ${masterDocumentId}`);
 
-        } else if (operation === 'create' || !masterDocumentId) {
-          // Create new document - no mapping exists, truly new content
+        } else if (operation === 'create' && masterDocumentId) {
+          // CREATE with existing mapping - this is likely adding content to existing doc
+          // Just update the existing document
+          strapi.log.info(`[Sync] 📝 Create with existing mapping - updating ${contentType} (master: ${masterDocumentId})`);
+
+          await strapi.documents(contentType).update({
+            documentId: masterDocumentId,
+            locale: message.locale || undefined,
+            data: cleanedData,
+            status: 'published',
+          });
+
+          // Update mapping
+          await documentMapping.setMapping(shipId, contentType, replicaDocumentId, masterDocumentId, shipId);
+
+          strapi.log.info(`[Sync] ✅ Updated existing ${contentType}: ${replicaDocumentId} -> ${masterDocumentId}`);
+
+        } else if (operation === 'create') {
+          // CREATE with NO mapping - truly new content
           const createOptions: any = {
             data: cleanedData,
             status: 'published',
           };
 
-          // Include locale if specified
           if (message.locale) {
             createOptions.locale = message.locale;
           }
@@ -220,10 +236,8 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
           const created = await strapi.documents(contentType).create(createOptions);
 
           if (created?.documentId) {
-            // Pass shipId as lastSyncedBy for conflict detection
             await documentMapping.setMapping(shipId, contentType, replicaDocumentId, created.documentId, shipId);
 
-            // Log this as a ship edit (for conflict detection)
             const masterSyncQueue = strapi.plugin('offline-sync').service('master-sync-queue');
             await masterSyncQueue.logEdit({
               contentType,
@@ -234,8 +248,6 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
 
             strapi.log.info(`[Sync] ✅ Created ${contentType}${message.locale ? ` [${message.locale}]` : ''}: ${replicaDocumentId} -> ${created.documentId}`);
 
-            // Send create ACK back to ship so it saves the reverse mapping
-            // This allows Master's future updates to be applied correctly on Replica
             const kafkaProducer = strapi.plugin('offline-sync').service('kafka-producer');
             if (kafkaProducer.isConnected()) {
               await kafkaProducer.sendCreateAck({
@@ -246,6 +258,28 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
               });
             }
           }
+        } else if (operation === 'update' && !masterDocumentId) {
+          // UPDATE with NO mapping - this should not happen if initial sync was done properly
+          // Log error and skip - do NOT create duplicate entries
+          strapi.log.error(`[Sync] ❌ UPDATE without mapping for ${contentType} (${replicaDocumentId}) - Initial sync required!`);
+          strapi.log.error(`[Sync] ❌ Please run initial sync API: POST /api/offline-sync/initial-sync`);
+
+          // Add to dead letter for manual review
+          await deadLetter.add({
+            messageId: messageId || `no-mapping-${Date.now()}`,
+            shipId,
+            contentType,
+            contentId: replicaDocumentId,
+            operation,
+            payload: { data: cleanedData, locale: message.locale },
+            error: new Error(`No mapping found for UPDATE operation. Run initial sync first.`),
+            maxRetries: 0, // Don't retry - needs manual intervention
+          });
+
+          if (messageId) {
+            await messageTracker.markFailed(messageId);
+          }
+          return; // Skip - requires initial sync
         } else {
           // UPDATE - Check for conflicts using multiple sources
           const mapping = await documentMapping.getMapping(shipId, contentType, replicaDocumentId);
