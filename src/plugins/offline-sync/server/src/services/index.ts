@@ -10,6 +10,7 @@ import messageTracker from './message-tracker';
 import deadLetter from './dead-letter';
 import documentMapping from './document-mapping';
 import initialSync from './initial-sync';
+import masterSyncQueue from './master-sync-queue';
 
 export default {
   'sync-queue': syncQueue,
@@ -24,5 +25,6 @@ export default {
   'dead-letter': deadLetter,
   'document-mapping': documentMapping,
   'initial-sync': initialSync,
+  'master-sync-queue': masterSyncQueue,
 };
 

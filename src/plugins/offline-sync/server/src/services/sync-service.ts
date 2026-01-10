@@ -222,6 +222,16 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
           if (created?.documentId) {
             // Pass shipId as lastSyncedBy for conflict detection
             await documentMapping.setMapping(shipId, contentType, replicaDocumentId, created.documentId, shipId);
+
+            // Log this as a ship edit (for conflict detection)
+            const masterSyncQueue = strapi.plugin('offline-sync').service('master-sync-queue');
+            await masterSyncQueue.logEdit({
+              contentType,
+              documentId: created.documentId,
+              operation: 'create',
+              editedBy: `ship-${shipId}`,
+            });
+
             strapi.log.info(`[Sync] ✅ Created ${contentType}${message.locale ? ` [${message.locale}]` : ''}: ${replicaDocumentId} -> ${created.documentId}`);
 
             // Send create ACK back to ship so it saves the reverse mapping
@@ -237,7 +247,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
             }
           }
         } else {
-          // UPDATE - Check for conflicts using lastSyncedAt and lastSyncedBy from mapping
+          // UPDATE - Check for conflicts using multiple sources
           const mapping = await documentMapping.getMapping(shipId, contentType, replicaDocumentId);
           const lastSyncedAt = mapping?.updatedAt ? new Date(mapping.updatedAt) : null;
           const lastSyncedBy = mapping?.lastSyncedBy || null;
@@ -246,20 +256,31 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
           const masterDoc = await strapi.documents(contentType).findOne({ documentId: masterDocumentId });
           const masterUpdatedAt = masterDoc?.updatedAt ? new Date(masterDoc.updatedAt) : null;
 
+          // Check if Master was directly edited by admin (using master_edit_log)
+          const masterSyncQueue = strapi.plugin('offline-sync').service('master-sync-queue');
+          const masterDirectEdit = await masterSyncQueue.getLastEditor(contentType, masterDocumentId);
+
           // Conflict Detection (Production-Ready):
-          // 1. Master was modified AFTER our last sync
-          // 2. AND the last modification was NOT from the same ship
-          // This prevents false conflicts when same ship does CREATE then UPDATE in sequence
+          // Case 1: Master was modified after last sync by a DIFFERENT ship
+          // Case 2: Master was directly edited by admin after last sync
           const masterModifiedAfterSync = lastSyncedAt && masterUpdatedAt && masterUpdatedAt > lastSyncedAt;
           const differentShipModified = lastSyncedBy !== shipId;
 
-          // Only trigger conflict if BOTH conditions are true:
-          // - Master was modified after last sync
-          // - The modification was by a DIFFERENT ship (or master itself)
-          const hasConflict = masterModifiedAfterSync && differentShipModified;
+          // Check if Master admin edited after last sync
+          const masterAdminEdited = masterDirectEdit &&
+            masterDirectEdit.editedBy === 'master-admin' &&
+            lastSyncedAt &&
+            masterDirectEdit.editedAt > lastSyncedAt;
+
+          // Trigger conflict if:
+          // 1. Master was modified after last sync by DIFFERENT source (ship or admin)
+          // 2. OR Master admin directly edited after last sync
+          const hasConflict = (masterModifiedAfterSync && differentShipModified) || masterAdminEdited;
 
           if (hasConflict) {
-            strapi.log.debug(`[Sync] Conflict check: lastSyncedBy=${lastSyncedBy}, currentShip=${shipId}, masterModified=${masterModifiedAfterSync}`);
+            const conflictSource = masterAdminEdited ? 'master-admin' : `ship (lastSyncedBy=${lastSyncedBy})`;
+            strapi.log.debug(`[Sync] Conflict check: source=${conflictSource}, currentShip=${shipId}, masterModified=${masterModifiedAfterSync}`);
+
             // Log conflict for admin resolution
             const conflictLog = await conflictResolver.logConflict({
               contentType,
@@ -269,10 +290,14 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
               masterVersion: 0, // Not using versions anymore
               shipData: cleanedData,
               masterData: this.cleanSyncData(masterDoc || {}),
-              conflictType: 'concurrent-edit',
+              conflictType: masterAdminEdited ? 'master-admin-edit' : 'concurrent-edit',
             });
 
-            strapi.log.warn(`[Sync] ⚠️ CONFLICT: ${contentType} (${masterDocumentId}) - master was edited after last sync`);
+            const conflictReason = masterAdminEdited
+              ? 'Master was directly edited by admin after last sync'
+              : 'Master was edited by another ship after last sync';
+
+            strapi.log.warn(`[Sync] ⚠️ CONFLICT: ${contentType} (${masterDocumentId}) - ${conflictReason}`);
 
             // Send conflict notification back to replica
             const kafkaProducer = strapi.plugin('offline-sync').service('kafka-producer');
@@ -283,7 +308,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
                 contentId: masterDocumentId,
                 replicaDocumentId,
                 conflictId: conflictLog?.id || 0,
-                reason: 'Master was edited after last sync from this ship',
+                reason: conflictReason,
                 masterData: this.cleanSyncData(masterDoc || {}),
                 shipData: cleanedData,
                 queueId: message.metadata?.queueId,
@@ -305,6 +330,14 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
 
           // Update the mapping timestamp and lastSyncedBy (for conflict detection)
           await documentMapping.setMapping(shipId, contentType, replicaDocumentId, masterDocumentId, shipId);
+
+          // Clear master edit log (ship sync takes over as latest modifier)
+          await masterSyncQueue.logEdit({
+            contentType,
+            documentId: masterDocumentId,
+            operation: 'update',
+            editedBy: `ship-${shipId}`,
+          });
 
           strapi.log.info(`[Sync] ✅ Updated ${contentType} (master: ${masterDocumentId})`);
         }

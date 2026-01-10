@@ -366,10 +366,14 @@ export default ({ strapi }: { strapi: any }) => {
 
     let kafkaConsumer: ReturnType<typeof strapi.plugin> | null = null;
     let cleanupIntervalId: NodeJS.Timeout | null = null;
+    let masterAutoPushIntervalId: NodeJS.Timeout | null = null;
     let isShuttingDown = false;
+    let masterWasOffline = false;
 
     // Initialize Kafka producer (for bi-directional sync: master → ships)
     const kafkaProducer = strapi.plugin('offline-sync').service('kafka-producer');
+    const masterSyncQueue = strapi.plugin('offline-sync').service('master-sync-queue');
+
     kafkaProducer.connect()
       .then(() => {
         strapi.log.info('[OfflineSync] ✅ Kafka producer connected (master mode)');
@@ -386,6 +390,87 @@ export default ({ strapi }: { strapi: any }) => {
         // Ignore disconnect errors
       }
     });
+
+    // ========================================================
+    // MASTER AUTO-PUSH: Push queued changes when Kafka reconnects
+    // ========================================================
+    const MASTER_AUTO_PUSH_INTERVAL_MS = 30000; // Check every 30 seconds
+
+    const masterAutoPushCheck = async () => {
+      if (isShuttingDown) return;
+
+      try {
+        // Check if there are pending items in Master queue
+        const pendingCount = await masterSyncQueue.getPendingCount();
+
+        if (pendingCount === 0) {
+          return; // Nothing to push
+        }
+
+        // Check if Kafka is connected
+        if (!kafkaProducer.isConnected()) {
+          if (!masterWasOffline) {
+            strapi.log.info(`[MasterAutoPush] 📴 Kafka offline - ${pendingCount} items queued`);
+            masterWasOffline = true;
+          }
+          return;
+        }
+
+        // We're online, push pending items
+        if (masterWasOffline) {
+          strapi.log.info(`[MasterAutoPush] 🔄 Kafka reconnected! Pushing ${pendingCount} queued items...`);
+          masterWasOffline = false;
+        }
+
+        // Dequeue and send pending items
+        const pending = await masterSyncQueue.dequeue(50);
+        let sent = 0;
+        let failed = 0;
+
+        for (const item of pending) {
+          try {
+            const message = {
+              messageId: `master-queued-${Date.now()}-${item.content_id}`,
+              shipId: 'master',
+              timestamp: new Date().toISOString(),
+              operation: item.operation,
+              contentType: item.content_type,
+              contentId: item.content_id,
+              version: 0,
+              data: item.data,
+              locale: item.locale,
+            };
+
+            await kafkaProducer.sendToShips(message);
+            await masterSyncQueue.markSent(item.id);
+            sent++;
+          } catch (error: any) {
+            await masterSyncQueue.markFailed(item.id, error);
+            failed++;
+          }
+        }
+
+        if (sent > 0 || failed > 0) {
+          strapi.log.info(`[MasterAutoPush] ✅ Pushed ${sent} items, ${failed} failed`);
+        }
+      } catch (error: any) {
+        strapi.log.debug(`[MasterAutoPush] Check error: ${error.message}`);
+      }
+    };
+
+    // Start Master auto-push interval
+    const startMasterAutoPush = () => {
+      // Initial check after startup
+      setTimeout(async () => {
+        await masterAutoPushCheck();
+      }, 15000); // Wait 15s for Kafka to connect
+
+      // Schedule periodic checks
+      masterAutoPushIntervalId = setInterval(masterAutoPushCheck, MASTER_AUTO_PUSH_INTERVAL_MS);
+      strapi.log.info(`[MasterAutoPush] ✅ Enabled (interval: ${MASTER_AUTO_PUSH_INTERVAL_MS / 1000}s)`);
+    };
+
+    startMasterAutoPush();
 
     // Initialize Kafka consumer (receives from ships)
     const kafkaService = strapi.plugin('offline-sync').service('kafka-consumer');
@@ -431,6 +516,12 @@ export default ({ strapi }: { strapi: any }) => {
         if (deadLetter?.cleanup) {
           await deadLetter.cleanup(30);
         }
+
+        // Cleanup old Master queue entries (keep 7 days)
+        const masterQueue = plugin.service('master-sync-queue');
+        if (masterQueue?.cleanup) {
+          await masterQueue.cleanup(7);
+        }
       } catch (error: unknown) {
         // Non-critical cleanup, silently ignore during shutdown
         if (!isShuttingDown && strapi?.log?.debug) {
@@ -443,6 +534,11 @@ export default ({ strapi }: { strapi: any }) => {
     // Cleanup function for graceful shutdown
     cleanupFunctions.push(async () => {
       isShuttingDown = true;
+
+      if (masterAutoPushIntervalId) {
+        clearInterval(masterAutoPushIntervalId);
+        masterAutoPushIntervalId = null;
+      }
 
       if (cleanupIntervalId) {
         clearInterval(cleanupIntervalId);
@@ -628,11 +724,22 @@ export default ({ strapi }: { strapi: any }) => {
 
         try {
           const kafkaProducer = strapi.plugin('offline-sync').service('kafka-producer');
+          const masterSyncQueue = strapi.plugin('offline-sync').service('master-sync-queue');
 
-          // Only publish if Kafka is connected
+          const safeData = operation !== 'delete' ? stripSensitiveData(syncData) : null;
+
+          // Log this edit as coming from Master admin (for conflict detection)
+          // This helps distinguish Master direct edits from Ship syncs
+          await masterSyncQueue.logEdit({
+            contentType: uid,
+            documentId,
+            operation,
+            editedBy: 'master-admin',
+            locale,
+          });
+
+          // Try to publish directly if Kafka is connected
           if (kafkaProducer.isConnected()) {
-            const safeData = operation !== 'delete' ? stripSensitiveData(syncData) : null;
-
             const message = {
               messageId: `master-${Date.now()}-${documentId}`,
               shipId: 'master',
@@ -647,10 +754,20 @@ export default ({ strapi }: { strapi: any }) => {
 
             await kafkaProducer.sendToShips(message);
             strapi.log.info(`[Sync] 📤 Published ${operation} for ${uid} (${documentId})${locale ? ` [${locale}]` : ''} to ships`);
+          } else {
+            // Kafka offline - queue for later
+            await masterSyncQueue.enqueue({
+              contentType: uid,
+              contentId: documentId,
+              operation,
+              data: safeData,
+              locale,
+            });
+            strapi.log.info(`[Sync] 📥 Queued ${operation} for ${uid} (${documentId})${locale ? ` [${locale}]` : ''} (Kafka offline)`);
           }
         } catch (error: any) {
           // Non-critical, don't fail the operation
-          strapi.log.debug(`[Sync] Failed to publish to ships: ${error.message}`);
+          strapi.log.debug(`[Sync] Failed to publish/queue to ships: ${error.message}`);
         }
       }
     } catch (syncError: any) {
