@@ -185,17 +185,14 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
 
         // Get master documentId - first check if provided in message, then lookup from mapping
         let masterDocumentId: string | null = null;
+        let masterDocIdFromMessage = false; // Track if we got it from message (need to create mapping later)
 
         // Priority 1: Use masterDocumentId from message (Replica sends this for existing content)
         if (message.masterDocumentId) {
           masterDocumentId = message.masterDocumentId;
+          masterDocIdFromMessage = true;
           strapi.log.debug(`[Sync] Using masterDocumentId from message: ${masterDocumentId}`);
-
-          // Also create/update the mapping on Master for future syncs
-          if (operation !== 'delete') {
-            await documentMapping.setMapping(shipId, contentType, replicaDocumentId, masterDocumentId, shipId);
-            strapi.log.debug(`[Sync] Created/updated mapping on Master: ${replicaDocumentId} -> ${masterDocumentId}`);
-          }
+          // NOTE: Do NOT update mapping here - must wait until AFTER conflict detection
         }
 
         // Priority 2: Lookup from Master's mapping table
@@ -331,25 +328,48 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
           const masterDirectEdit = await masterSyncQueue.getLastEditor(contentType, masterDocumentId);
 
           // Conflict Detection (Production-Ready):
-          // Case 1: Master was modified after last sync by a DIFFERENT ship
-          // Case 2: Master was directly edited by admin after last sync
-          const masterModifiedAfterSync = lastSyncedAt && masterUpdatedAt && masterUpdatedAt > lastSyncedAt;
-          const differentShipModified = lastSyncedBy !== shipId;
+          let hasConflict = false;
+          let conflictSource = '';
 
-          // Check if Master admin edited after last sync
-          const masterAdminEdited = masterDirectEdit &&
-            masterDirectEdit.editedBy === 'master-admin' &&
-            lastSyncedAt &&
-            masterDirectEdit.editedAt > lastSyncedAt;
+          // Case A: masterDocumentId came from message (no mapping on Master yet)
+          // This happens for existing content after initial sync
+          if (masterDocIdFromMessage && !mapping) {
+            // No mapping on Master - check ONLY master_edit_log
+            // If Master admin edited, it's a conflict
+            if (masterDirectEdit && masterDirectEdit.editedBy === 'master-admin') {
+              hasConflict = true;
+              conflictSource = 'master-admin (no mapping, first sync after initial sync)';
+              strapi.log.debug(`[Sync] Conflict: No mapping exists, master_edit_log shows admin edited`);
+            }
+            // If last editor was a ship or no edit log, no conflict (allow first sync)
+          } else {
+            // Case B: Normal flow - mapping exists on Master
+            // Case 1: Master was modified after last sync by a DIFFERENT ship
+            const masterModifiedAfterSync = lastSyncedAt && masterUpdatedAt && masterUpdatedAt > lastSyncedAt;
+            const differentShipModified = lastSyncedBy !== shipId;
 
-          // Trigger conflict if:
-          // 1. Master was modified after last sync by DIFFERENT source (ship or admin)
-          // 2. OR Master admin directly edited after last sync
-          const hasConflict = (masterModifiedAfterSync && differentShipModified) || masterAdminEdited;
+            // Case 2: Master was directly edited by admin after last sync
+            const masterAdminEdited = masterDirectEdit &&
+              masterDirectEdit.editedBy === 'master-admin' &&
+              lastSyncedAt &&
+              masterDirectEdit.editedAt > lastSyncedAt;
+
+            // Trigger conflict if:
+            // 1. Master was modified after last sync by DIFFERENT source (ship or admin)
+            // 2. OR Master admin directly edited after last sync
+            hasConflict = (masterModifiedAfterSync && differentShipModified) || masterAdminEdited;
+
+            if (hasConflict) {
+              conflictSource = masterAdminEdited ? 'master-admin' : `ship (lastSyncedBy=${lastSyncedBy})`;
+            }
+          }
+
+          strapi.log.debug(`[Sync] Conflict check: hasConflict=${hasConflict}, masterDocIdFromMessage=${masterDocIdFromMessage}, mappingExists=${!!mapping}`);
 
           if (hasConflict) {
-            const conflictSource = masterAdminEdited ? 'master-admin' : `ship (lastSyncedBy=${lastSyncedBy})`;
-            strapi.log.debug(`[Sync] Conflict check: source=${conflictSource}, currentShip=${shipId}, masterModified=${masterModifiedAfterSync}`);
+            strapi.log.debug(`[Sync] Conflict detected: source=${conflictSource}, currentShip=${shipId}`);
+
+            const isMasterAdminConflict = conflictSource.includes('master-admin');
 
             // Log conflict for admin resolution
             const conflictLog = await conflictResolver.logConflict({
@@ -360,11 +380,11 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
               masterVersion: 0, // Not using versions anymore
               shipData: cleanedData,
               masterData: this.cleanSyncData(masterDoc || {}),
-              conflictType: masterAdminEdited ? 'master-admin-edit' : 'concurrent-edit',
+              conflictType: isMasterAdminConflict ? 'master-admin-edit' : 'concurrent-edit',
             });
 
-            const conflictReason = masterAdminEdited
-              ? 'Master was directly edited by admin after last sync'
+            const conflictReason = isMasterAdminConflict
+              ? 'Master was directly edited by admin - both sides made changes while offline'
               : 'Master was edited by another ship after last sync';
 
             strapi.log.warn(`[Sync] ⚠️ CONFLICT: ${contentType} (${masterDocumentId}) - ${conflictReason}`);
@@ -383,6 +403,12 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
                 shipData: cleanedData,
                 queueId: message.metadata?.queueId,
               });
+            }
+
+            // If masterDocumentId came from message, still create mapping for future syncs
+            // (so conflict resolution can work properly)
+            if (masterDocIdFromMessage) {
+              await documentMapping.setMapping(shipId, contentType, replicaDocumentId, masterDocumentId, shipId);
             }
 
             if (messageId) {
