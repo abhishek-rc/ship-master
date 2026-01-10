@@ -38,6 +38,12 @@
             "type": "string",
             "required": true,
             "maxLength": 255
+        },
+        "lastSyncedBy": {
+            "type": "string",
+            "required": false,
+            "maxLength": 100,
+            "description": "ShipId of the last ship that synced this document (for conflict detection)"
         }
     }
 }

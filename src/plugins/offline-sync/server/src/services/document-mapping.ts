@@ -13,6 +13,7 @@ interface DocumentMapping {
     contentType: string;
     replicaDocumentId: string;
     masterDocumentId: string;
+    lastSyncedBy: string | null;  // ShipId of last ship that synced (for conflict detection)
     createdAt: Date;
     updatedAt: Date;
 }
@@ -83,12 +84,14 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
 
         /**
          * Create or update a document mapping
+         * @param lastSyncedBy - ShipId that performed this sync (for conflict detection)
          */
         async setMapping(
             shipId: string,
             contentType: string,
             replicaDocumentId: string,
-            masterDocumentId: string
+            masterDocumentId: string,
+            lastSyncedBy?: string  // Optional: which ship performed this sync
         ): Promise<DocumentMapping | null> {
             if (!isDbAvailable()) {
                 return null;
@@ -105,6 +108,8 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
                 });
 
                 const now = new Date();
+                // Use provided lastSyncedBy, or default to the shipId
+                const syncedBy = lastSyncedBy || shipId;
 
                 if (existing) {
                     // Update existing mapping
@@ -112,6 +117,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
                         where: { id: existing.id },
                         data: { 
                             masterDocumentId,
+                            lastSyncedBy: syncedBy,
                             updatedAt: now,
                         },
                     });
@@ -126,13 +132,14 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
                         contentType,
                         replicaDocumentId,
                         masterDocumentId,
+                        lastSyncedBy: syncedBy,
                         createdAt: now,
                         updatedAt: now,
                     },
                 });
 
                 if (strapi?.log) {
-                    strapi.log.debug(`[DocumentMapping] Created mapping: ${replicaDocumentId} -> ${masterDocumentId}`);
+                    strapi.log.debug(`[DocumentMapping] Created mapping: ${replicaDocumentId} -> ${masterDocumentId} (by ${syncedBy})`);
                 }
                 return created as DocumentMapping;
             } catch (error: unknown) {

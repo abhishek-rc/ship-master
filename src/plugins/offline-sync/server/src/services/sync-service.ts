@@ -180,9 +180,9 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
               deleteOptions.locale = message.locale;
               strapi.log.info(`[Sync] 🗑️ Deleting ${contentType} locale=${message.locale} (replica: ${replicaDocumentId})`);
             }
-            
+
             await strapi.documents(contentType).delete(deleteOptions);
-            
+
             // Only delete mapping if ALL locales were deleted (no specific locale)
             if (!message.locale) {
               await documentMapping.deleteMapping(shipId, contentType, replicaDocumentId);
@@ -195,32 +195,33 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
           // SPECIAL CASE: Adding a new locale to an existing document
           // Mapping exists (masterDocumentId found) + locale specified = new locale for existing doc
           strapi.log.info(`[Sync] 🌐 Adding locale ${message.locale} to existing ${contentType} (master: ${masterDocumentId})`);
-          
+
           await strapi.documents(contentType).update({
             documentId: masterDocumentId,
             locale: message.locale,
             data: cleanedData,
             status: 'published',
           });
-          
+
           strapi.log.info(`[Sync] ✅ Added locale ${message.locale} to ${contentType}: ${replicaDocumentId} -> ${masterDocumentId}`);
-          
+
         } else if (operation === 'create' || !masterDocumentId) {
           // Create new document - no mapping exists, truly new content
           const createOptions: any = {
             data: cleanedData,
             status: 'published',
           };
-          
+
           // Include locale if specified
           if (message.locale) {
             createOptions.locale = message.locale;
           }
-          
+
           const created = await strapi.documents(contentType).create(createOptions);
 
           if (created?.documentId) {
-            await documentMapping.setMapping(shipId, contentType, replicaDocumentId, created.documentId);
+            // Pass shipId as lastSyncedBy for conflict detection
+            await documentMapping.setMapping(shipId, contentType, replicaDocumentId, created.documentId, shipId);
             strapi.log.info(`[Sync] ✅ Created ${contentType}${message.locale ? ` [${message.locale}]` : ''}: ${replicaDocumentId} -> ${created.documentId}`);
 
             // Send create ACK back to ship so it saves the reverse mapping
@@ -236,19 +237,29 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
             }
           }
         } else {
-          // UPDATE - Check for conflicts using lastSyncedAt from mapping
+          // UPDATE - Check for conflicts using lastSyncedAt and lastSyncedBy from mapping
           const mapping = await documentMapping.getMapping(shipId, contentType, replicaDocumentId);
           const lastSyncedAt = mapping?.updatedAt ? new Date(mapping.updatedAt) : null;
+          const lastSyncedBy = mapping?.lastSyncedBy || null;
 
           // Get current master document
           const masterDoc = await strapi.documents(contentType).findOne({ documentId: masterDocumentId });
           const masterUpdatedAt = masterDoc?.updatedAt ? new Date(masterDoc.updatedAt) : null;
 
-          // Conflict: Master was modified AFTER our last sync to it
-          // This means someone edited on master while ship was making changes
-          const hasConflict = lastSyncedAt && masterUpdatedAt && masterUpdatedAt > lastSyncedAt;
+          // Conflict Detection (Production-Ready):
+          // 1. Master was modified AFTER our last sync
+          // 2. AND the last modification was NOT from the same ship
+          // This prevents false conflicts when same ship does CREATE then UPDATE in sequence
+          const masterModifiedAfterSync = lastSyncedAt && masterUpdatedAt && masterUpdatedAt > lastSyncedAt;
+          const differentShipModified = lastSyncedBy !== shipId;
+
+          // Only trigger conflict if BOTH conditions are true:
+          // - Master was modified after last sync
+          // - The modification was by a DIFFERENT ship (or master itself)
+          const hasConflict = masterModifiedAfterSync && differentShipModified;
 
           if (hasConflict) {
+            strapi.log.debug(`[Sync] Conflict check: lastSyncedBy=${lastSyncedBy}, currentShip=${shipId}, masterModified=${masterModifiedAfterSync}`);
             // Log conflict for admin resolution
             const conflictLog = await conflictResolver.logConflict({
               contentType,
@@ -292,8 +303,8 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
             status: 'published',
           });
 
-          // Update the mapping timestamp (so we know when we last synced)
-          await documentMapping.setMapping(shipId, contentType, replicaDocumentId, masterDocumentId);
+          // Update the mapping timestamp and lastSyncedBy (for conflict detection)
+          await documentMapping.setMapping(shipId, contentType, replicaDocumentId, masterDocumentId, shipId);
 
           strapi.log.info(`[Sync] ✅ Updated ${contentType} (master: ${masterDocumentId})`);
         }
@@ -401,7 +412,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
             if (deleteLocale) {
               findOptions.locale = deleteLocale;
             }
-            
+
             const localDoc = await strapi.documents(contentType).findOne(findOptions);
 
             if (localDoc) {
@@ -410,7 +421,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
               if (deleteLocale) {
                 deleteOptions.locale = deleteLocale;
               }
-              
+
               await strapi.documents(contentType).delete(deleteOptions);
               strapi.log.info(`[Sync] ✅ Deleted local ${contentType}${deleteLocale ? ` [${deleteLocale}]` : ''} (${localMapping.replicaDocumentId}) from master`);
             } else {
@@ -455,16 +466,16 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
               data: cleanedData,
               status: 'published',
             };
-            
+
             // Include locale if specified (for locale-specific updates)
             if (message.locale) {
               updateOptions.locale = message.locale;
             }
-            
+
             await strapi.documents(contentType).update(updateOptions);
 
-            // Update mapping timestamp
-            await documentMapping.setMapping(shipId, contentType, localMapping.replicaDocumentId, masterDocumentId);
+            // Update mapping timestamp - master made this change
+            await documentMapping.setMapping(shipId, contentType, localMapping.replicaDocumentId, masterDocumentId, 'master');
 
             strapi.log.info(`[Sync] 📥 Updated local ${contentType}${message.locale ? ` [${message.locale}]` : ''} (${localMapping.replicaDocumentId}) from master`);
           } else {
@@ -473,16 +484,17 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
               data: cleanedData,
               status: 'published',
             };
-            
+
             // Include locale if specified
             if (message.locale) {
               recreateOptions.locale = message.locale;
             }
-            
+
             const created = await strapi.documents(contentType).create(recreateOptions);
 
             if (created?.documentId) {
-              await documentMapping.setMapping(shipId, contentType, created.documentId, masterDocumentId);
+              // Master triggered this recreate
+              await documentMapping.setMapping(shipId, contentType, created.documentId, masterDocumentId, 'master');
               strapi.log.info(`[Sync] 📥 Recreated ${contentType}${message.locale ? ` [${message.locale}]` : ''}: master ${masterDocumentId} -> local ${created.documentId}`);
 
               // Send mapping ACK to master so it knows the relationship
@@ -502,16 +514,17 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
             data: cleanedData,
             status: 'published',
           };
-          
+
           // Include locale if specified
           if (message.locale) {
             createOptions.locale = message.locale;
           }
-          
+
           const created = await strapi.documents(contentType).create(createOptions);
 
           if (created?.documentId) {
-            await documentMapping.setMapping(shipId, contentType, created.documentId, masterDocumentId);
+            // Master created this document
+            await documentMapping.setMapping(shipId, contentType, created.documentId, masterDocumentId, 'master');
             strapi.log.info(`[Sync] 📥 Created local ${contentType} from master: ${masterDocumentId} -> ${created.documentId}`);
 
             // Send mapping ACK to master so it knows the relationship
@@ -780,8 +793,8 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
           return;
         }
 
-        // Save the mapping on master
-        await documentMapping.setMapping(shipId, contentType, replicaDocumentId, masterDocumentId);
+        // Save the mapping on master - ship made this change
+        await documentMapping.setMapping(shipId, contentType, replicaDocumentId, masterDocumentId, shipId);
 
         strapi.log.info(`[Sync] ✅ Mapping ACK received: ${shipId}'s ${replicaDocumentId} → master's ${masterDocumentId}`);
 
@@ -843,9 +856,9 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
           return;
         }
 
-        // Save the mapping on replica
+        // Save the mapping on replica - this ship created it
         // This allows us to find master's document when Master sends updates
-        await documentMapping.setMapping(config.shipId, contentType, replicaDocumentId, masterDocumentId);
+        await documentMapping.setMapping(config.shipId, contentType, replicaDocumentId, masterDocumentId, config.shipId);
 
         strapi.log.info(`[Sync] ✅ Create ACK received: my ${replicaDocumentId} → master's ${masterDocumentId}`);
 
