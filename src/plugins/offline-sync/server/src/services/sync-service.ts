@@ -15,6 +15,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
 
       const syncQueue = strapi.plugin('offline-sync').service('sync-queue');
       const kafkaProducer = strapi.plugin('offline-sync').service('kafka-producer');
+      const documentMapping = strapi.plugin('offline-sync').service('document-mapping');
 
       let pushed = 0;
       let failed = 0;
@@ -44,6 +45,24 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
             // Include locale if present (for i18n support)
             if (operation.locale) {
               message.locale = operation.locale;
+            }
+
+            // For UPDATE/DELETE operations, include masterDocumentId if we have a mapping
+            // This helps Master identify the document even if it doesn't have the mapping yet
+            if (operation.operation !== 'create') {
+              try {
+                const masterDocId = await documentMapping.getMasterDocumentId(
+                  config.shipId,
+                  operation.content_type,
+                  operation.content_id
+                );
+                if (masterDocId) {
+                  message.masterDocumentId = masterDocId;
+                  strapi.log.debug(`[Push] Including masterDocumentId: ${masterDocId} for ${operation.content_id}`);
+                }
+              } catch (mappingError: any) {
+                strapi.log.debug(`[Push] No mapping found for ${operation.content_id}: ${mappingError.message}`);
+              }
             }
 
             await kafkaProducer.send(message);
@@ -164,12 +183,29 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
         // Clean data - remove internal fields
         const cleanedData = this.cleanSyncData(data || {});
 
-        // Get master documentId from mapping (if exists)
-        let masterDocumentId = await documentMapping.getMasterDocumentId(
-          shipId,
-          contentType,
-          replicaDocumentId
-        );
+        // Get master documentId - first check if provided in message, then lookup from mapping
+        let masterDocumentId: string | null = null;
+
+        // Priority 1: Use masterDocumentId from message (Replica sends this for existing content)
+        if (message.masterDocumentId) {
+          masterDocumentId = message.masterDocumentId;
+          strapi.log.debug(`[Sync] Using masterDocumentId from message: ${masterDocumentId}`);
+
+          // Also create/update the mapping on Master for future syncs
+          if (operation !== 'delete') {
+            await documentMapping.setMapping(shipId, contentType, replicaDocumentId, masterDocumentId, shipId);
+            strapi.log.debug(`[Sync] Created/updated mapping on Master: ${replicaDocumentId} -> ${masterDocumentId}`);
+          }
+        }
+
+        // Priority 2: Lookup from Master's mapping table
+        if (!masterDocumentId) {
+          masterDocumentId = await documentMapping.getMasterDocumentId(
+            shipId,
+            contentType,
+            replicaDocumentId
+          );
+        }
 
         // Handle operations
         if (operation === 'delete') {
