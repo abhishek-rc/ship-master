@@ -328,6 +328,31 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
           const masterDoc = await strapi.documents(contentType).findOne(findOptions);
           const masterUpdatedAt = masterDoc?.updatedAt ? new Date(masterDoc.updatedAt) : null;
 
+          // IMPORTANT: If the specific locale doesn't exist on master, this is a NEW locale
+          // No conflict possible - just create/update the new locale
+          const isNewLocale = message.locale && !masterDoc;
+          if (isNewLocale) {
+            strapi.log.info(`[Sync] 🌐 Adding new locale ${message.locale} to existing ${contentType} (master: ${masterDocumentId})`);
+
+            await strapi.documents(contentType).update({
+              documentId: masterDocumentId,
+              locale: message.locale,
+              data: cleanedData,
+              status: 'published',
+            });
+
+            // Update the mapping
+            await documentMapping.setMapping(shipId, contentType, replicaDocumentId, masterDocumentId, shipId);
+
+            strapi.log.info(`[Sync] ✅ Added locale ${message.locale} to ${contentType} (master: ${masterDocumentId})`);
+
+            // Mark message as processed and return early
+            if (messageId) {
+              await messageTracker.markProcessed(messageId, { shipId, contentType, contentId: replicaDocumentId, operation, locale: message.locale });
+            }
+            return;
+          }
+
           // Check if Master was directly edited by admin (using master_edit_log)
           const masterSyncQueue = strapi.plugin('offline-sync').service('master-sync-queue');
           const masterDirectEdit = await masterSyncQueue.getLastEditor(contentType, masterDocumentId);
