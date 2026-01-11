@@ -134,6 +134,7 @@ export default ({ strapi }: { strapi: any }) => {
 
     /**
      * Send sync message to Kafka
+     * Includes automatic retry with reconnection on failure
      */
     async send(message: {
       messageId: string;
@@ -147,6 +148,8 @@ export default ({ strapi }: { strapi: any }) => {
       metadata?: any;
     }, topic?: string): Promise<any> {
       const config = strapi.config.get('plugin::offline-sync', {});
+      const MAX_RETRIES = 3;
+      const RETRY_DELAY_MS = 1000;
 
       // Always try to reconnect if not connected
       if (!producer || !isConnected) {
@@ -169,32 +172,63 @@ export default ({ strapi }: { strapi: any }) => {
         }
       }
 
-      try {
-        const result = await producer.send({
-          topic: targetTopic as string,
-          messages: [{
-            key: message.shipId,
-            value: JSON.stringify(message),
-            headers: {
-              'content-type': 'application/json',
-              'ship-id': message.shipId,
-            },
-          }],
-        });
+      // Retry loop with exponential backoff
+      let lastError: Error | null = null;
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const result = await producer.send({
+            topic: targetTopic as string,
+            messages: [{
+              key: message.shipId,
+              value: JSON.stringify(message),
+              headers: {
+                'content-type': 'application/json',
+                'ship-id': message.shipId,
+              },
+            }],
+          });
 
-        strapi.log.debug(`Message sent to Kafka topic ${targetTopic}: ${message.messageId}`);
-        return result;
-      } catch (error: any) {
-        strapi.log.error(`Failed to send message to Kafka: ${error.message}`);
-        throw error;
+          strapi.log.debug(`Message sent to Kafka topic ${targetTopic}: ${message.messageId}`);
+          return result;
+        } catch (error: any) {
+          lastError = error;
+          const isDisconnectError = error.message?.includes('disconnected') || 
+                                     error.message?.includes('not connected') ||
+                                     error.message?.includes('ECONNRESET');
+          
+          if (isDisconnectError && attempt < MAX_RETRIES) {
+            strapi.log.warn(`[Kafka] Send failed (attempt ${attempt}/${MAX_RETRIES}): ${error.message}, retrying after reconnect...`);
+            
+            // Mark as disconnected and wait before retry
+            isConnected = false;
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt));
+            
+            // Try to reconnect
+            try {
+              await this.connect();
+            } catch (connectError: any) {
+              strapi.log.debug(`[Kafka] Reconnect failed: ${connectError.message}`);
+              continue; // Try next attempt anyway
+            }
+          } else {
+            // Non-recoverable error or max retries reached
+            break;
+          }
+        }
       }
+
+      strapi.log.error(`Failed to send message to Kafka: ${lastError?.message}`);
+      throw lastError;
     },
 
     /**
      * Send batch of messages
+     * Includes automatic retry with reconnection on failure
      */
     async sendBatch(messages: any[]): Promise<any> {
       const config = strapi.config.get('plugin::offline-sync', {});
+      const MAX_RETRIES = 3;
+      const RETRY_DELAY_MS = 1000;
 
       if (!producer || !isConnected) {
         await this.connect();
@@ -204,27 +238,54 @@ export default ({ strapi }: { strapi: any }) => {
         throw new Error('Kafka producer not initialized');
       }
 
-      try {
-        const kafkaMessages = messages.map(msg => ({
-          key: msg.shipId,
-          value: JSON.stringify(msg),
-          headers: {
-            'content-type': 'application/json',
-            'ship-id': msg.shipId,
-          },
-        }));
+      const kafkaMessages = messages.map(msg => ({
+        key: msg.shipId,
+        value: JSON.stringify(msg),
+        headers: {
+          'content-type': 'application/json',
+          'ship-id': msg.shipId,
+        },
+      }));
 
-        const result = await producer.send({
-          topic: config.kafka.topics.shipUpdates,
-          messages: kafkaMessages,
-        });
+      // Retry loop with exponential backoff
+      let lastError: Error | null = null;
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const result = await producer.send({
+            topic: config.kafka.topics.shipUpdates,
+            messages: kafkaMessages,
+          });
 
-        strapi.log.debug(`Batch of ${messages.length} messages sent to Kafka`);
-        return result;
-      } catch (error: any) {
-        strapi.log.error(`Failed to send batch to Kafka: ${error.message}`);
-        throw error;
+          strapi.log.debug(`Batch of ${messages.length} messages sent to Kafka`);
+          return result;
+        } catch (error: any) {
+          lastError = error;
+          const isDisconnectError = error.message?.includes('disconnected') || 
+                                     error.message?.includes('not connected') ||
+                                     error.message?.includes('ECONNRESET');
+          
+          if (isDisconnectError && attempt < MAX_RETRIES) {
+            strapi.log.warn(`[Kafka] Batch send failed (attempt ${attempt}/${MAX_RETRIES}): ${error.message}, retrying after reconnect...`);
+            
+            // Mark as disconnected and wait before retry
+            isConnected = false;
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt));
+            
+            // Try to reconnect
+            try {
+              await this.connect();
+            } catch (connectError: any) {
+              strapi.log.debug(`[Kafka] Reconnect failed: ${connectError.message}`);
+              continue;
+            }
+          } else {
+            break;
+          }
+        }
       }
+
+      strapi.log.error(`Failed to send batch to Kafka: ${lastError?.message}`);
+      throw lastError;
     },
 
     /**

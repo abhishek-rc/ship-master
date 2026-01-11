@@ -171,25 +171,39 @@ export default ({ strapi }: { strapi: any }) => {
     const connectivityMonitor = strapi.plugin('offline-sync').service('connectivity-monitor');
     connectivityMonitor.startMonitoring(pluginConfig.sync.connectivityCheckInterval);
 
-    // Register reconnection callback for immediate push
+    // Register reconnection callback for push after connection stabilizes
     connectivityMonitor.onReconnect(async () => {
-      strapi.log.info('[OfflineSync] 🔄 Connection restored - triggering immediate push...');
-      // Use setImmediate to avoid blocking the connectivity check
-      setImmediate(async () => {
+      strapi.log.info('[OfflineSync] 🔄 Connection restored - waiting for stabilization...');
+      
+      // Use setTimeout to:
+      // 1. Avoid blocking the connectivity check
+      // 2. Give the Kafka connection time to fully stabilize before pushing
+      const STABILIZATION_DELAY_MS = 3000; // 3 seconds to stabilize
+      
+      setTimeout(async () => {
         try {
           const syncService = strapi.plugin('offline-sync').service('sync-service');
           const syncQueue = strapi.plugin('offline-sync').service('sync-queue');
+          const kafkaProducer = strapi.plugin('offline-sync').service('kafka-producer');
+
+          // Verify connection is still stable after delay
+          if (!kafkaProducer.isConnected()) {
+            strapi.log.warn('[OfflineSync] Connection unstable after stabilization delay, skipping push');
+            return;
+          }
 
           const pendingCount = await syncQueue.getPending(pluginConfig.shipId);
           if (pendingCount > 0) {
             strapi.log.info(`[OfflineSync] 📤 Pushing ${pendingCount} pending items after reconnection...`);
             const result = await syncService.push();
             strapi.log.info(`[OfflineSync] ✅ Reconnection push complete: ${result.pushed} pushed, ${result.failed} failed`);
+          } else {
+            strapi.log.info('[OfflineSync] No pending items to push after reconnection');
           }
         } catch (error: any) {
           strapi.log.error(`[OfflineSync] Reconnection push error: ${error.message}`);
         }
-      });
+      }, STABILIZATION_DELAY_MS);
     });
 
     // Add monitor stop to cleanup
@@ -306,6 +320,7 @@ export default ({ strapi }: { strapi: any }) => {
     const autoPushCheck = async () => {
       try {
         const syncQueue = strapi.plugin('offline-sync').service('sync-queue');
+        const kafkaProducer = strapi.plugin('offline-sync').service('kafka-producer');
 
         // Check if there are pending items
         const pendingItems = await syncQueue.getPending(pluginConfig.shipId);
@@ -314,13 +329,24 @@ export default ({ strapi }: { strapi: any }) => {
         }
 
         // Check connectivity
-        const { isOnline } = await connectivityMonitor.checkConnectivity();
+        const { isOnline, wasReconnected } = await connectivityMonitor.checkConnectivity();
 
         if (isOnline) {
-          // If we were offline and now online, log reconnection
-          if (wasOffline) {
-            strapi.log.info(`[AutoPush] 🔄 Reconnected! Found ${pendingItems} pending items to push`);
+          // If we just reconnected, wait for connection to stabilize
+          if (wasReconnected || wasOffline) {
+            strapi.log.info(`[AutoPush] 🔄 Reconnected! Waiting for connection to stabilize...`);
             wasOffline = false;
+            
+            // Wait for stabilization before pushing
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Verify still connected after delay
+            if (!kafkaProducer.isConnected()) {
+              strapi.log.warn(`[AutoPush] Connection unstable, skipping push`);
+              return;
+            }
+            
+            strapi.log.info(`[AutoPush] Connection stable. Found ${pendingItems} pending items to push`);
           }
 
           // Push pending items
