@@ -340,6 +340,7 @@ export default ({ strapi }: { strapi: any }) => {
       contentType: string;
       replicaDocumentId: string;
       masterDocumentId: string;
+      locale?: string | null;
     }): Promise<boolean> {
       const config = strapi.config.get('plugin::offline-sync', {});
 
@@ -360,7 +361,7 @@ export default ({ strapi }: { strapi: any }) => {
       try {
         const topic = config.kafka.topics?.masterUpdates || 'master-updates';
 
-        const message = {
+        const message: any = {
           messageId: `create-ack-${ack.shipId}-${Date.now()}`,
           shipId: ack.shipId,
           timestamp: new Date().toISOString(),
@@ -369,6 +370,11 @@ export default ({ strapi }: { strapi: any }) => {
           replicaDocumentId: ack.replicaDocumentId,
           masterDocumentId: ack.masterDocumentId,
         };
+        
+        // Include locale for i18n support
+        if (ack.locale) {
+          message.locale = ack.locale;
+        }
 
         await producer.send({
           topic,

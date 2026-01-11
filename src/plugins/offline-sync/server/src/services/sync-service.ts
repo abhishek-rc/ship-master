@@ -288,6 +288,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
                 contentType,
                 replicaDocumentId,
                 masterDocumentId: created.documentId,
+                locale: message.locale || null,
               });
             }
           }
@@ -958,7 +959,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
         return;
       }
 
-      const { shipId, contentType, replicaDocumentId, masterDocumentId } = message;
+      const { shipId, contentType, replicaDocumentId, masterDocumentId, locale } = message;
 
       // Only process if this ACK is for our ship
       if (shipId !== config.shipId) {
@@ -986,13 +987,15 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
           return;
         }
 
-        // Verify the local document exists
-        const localDoc = await strapi.documents(contentType).findOne({
-          documentId: replicaDocumentId
-        });
+        // Verify the local document exists (include locale for i18n support)
+        const findOptions: any = { documentId: replicaDocumentId };
+        if (locale) {
+          findOptions.locale = locale;
+        }
+        const localDoc = await strapi.documents(contentType).findOne(findOptions);
 
         if (!localDoc) {
-          strapi.log.warn(`[Sync] Local document not found: ${contentType}/${replicaDocumentId}`);
+          strapi.log.warn(`[Sync] Local document not found: ${contentType}/${replicaDocumentId}${locale ? ` [${locale}]` : ''}`);
           return;
         }
 
@@ -1000,7 +1003,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
         // This allows us to find master's document when Master sends updates
         await documentMapping.setMapping(config.shipId, contentType, replicaDocumentId, masterDocumentId, config.shipId);
 
-        strapi.log.info(`[Sync] ✅ Create ACK received: my ${replicaDocumentId} → master's ${masterDocumentId}`);
+        strapi.log.info(`[Sync] ✅ Create ACK received: my ${replicaDocumentId} → master's ${masterDocumentId}${locale ? ` [${locale}]` : ''}`);
 
       } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
