@@ -51,19 +51,37 @@ export default ({ strapi }: { strapi: any }) => {
         return { isOnline: true, wasReconnected: false };
       }
 
-      const previousState = isOnline;
-
       try {
         const kafkaProducer = strapi.plugin('offline-sync').service('kafka-producer');
 
-        // First, try to connect if not connected
+        // Always try to connect/reconnect - the connect() method handles cleanup internally
         if (!kafkaProducer.isConnected()) {
-          await kafkaProducer.connect();
+          strapi.log.debug('[Connectivity] Kafka disconnected, attempting to reconnect...');
+          try {
+            await kafkaProducer.connect();
+            strapi.log.info('[Connectivity] ✅ Kafka reconnected successfully');
+          } catch (connectError: any) {
+            strapi.log.debug(`[Connectivity] Reconnect attempt failed: ${connectError.message}`);
+            isOnline = false;
+            return { isOnline: false, wasReconnected: false, error: connectError.message };
+          }
         }
 
-        // Then do an actual health check to verify broker is reachable
+        // Verify connection with health check
         const healthy = await kafkaProducer.healthCheck();
-        isOnline = healthy;
+
+        if (!healthy) {
+          // Health check failed, try to reconnect
+          strapi.log.debug('[Connectivity] Health check failed, forcing reconnect...');
+          try {
+            await kafkaProducer.connect();
+            isOnline = kafkaProducer.isConnected();
+          } catch {
+            isOnline = false;
+          }
+        } else {
+          isOnline = true;
+        }
 
         // Detect reconnection (was offline, now online)
         const wasReconnected = !wasOnline && isOnline;
@@ -81,10 +99,9 @@ export default ({ strapi }: { strapi: any }) => {
 
         return { isOnline, wasReconnected };
       } catch (error: any) {
-        const wasReconnected = false;
         isOnline = false;
-        wasOnline = false;
-        return { isOnline: false, wasReconnected, error: error.message };
+        strapi.log.debug(`[Connectivity] Check failed: ${error.message}`);
+        return { isOnline: false, wasReconnected: false, error: error.message };
       }
     },
 

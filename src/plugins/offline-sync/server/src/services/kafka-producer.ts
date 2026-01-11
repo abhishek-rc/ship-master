@@ -20,6 +20,32 @@ export default ({ strapi }: { strapi: any }) => {
         : `ship-${config.shipId}`;
 
       try {
+        // If already connected, verify connection is healthy
+        if (producer && isConnected) {
+          try {
+            // Quick health check
+            if (admin) {
+              await admin.listTopics();
+              return; // Still connected
+            }
+          } catch {
+            // Connection is stale, need to reconnect
+            strapi.log.info('[Kafka] Connection stale, reconnecting...');
+          }
+        }
+
+        // Clean up existing connections before reconnecting
+        if (admin) {
+          try { await admin.disconnect(); } catch { /* ignore */ }
+          admin = null;
+        }
+        if (producer) {
+          try { await producer.disconnect(); } catch { /* ignore */ }
+          producer = null;
+        }
+        isConnected = false;
+
+        // Create fresh Kafka instance
         kafka = new Kafka({
           clientId,
           brokers: config.kafka.brokers,
@@ -29,6 +55,8 @@ export default ({ strapi }: { strapi: any }) => {
             username: config.kafka.sasl.username,
             password: config.kafka.sasl.password,
           } : undefined,
+          connectionTimeout: 10000, // 10 second timeout
+          requestTimeout: 30000,    // 30 second request timeout
         });
 
         producer = kafka.producer({
@@ -120,12 +148,14 @@ export default ({ strapi }: { strapi: any }) => {
     }, topic?: string): Promise<any> {
       const config = strapi.config.get('plugin::offline-sync', {});
 
+      // Always try to reconnect if not connected
       if (!producer || !isConnected) {
+        strapi.log.debug('[Kafka] Producer not connected, attempting to connect...');
         await this.connect();
       }
 
-      if (!producer) {
-        throw new Error('Kafka producer not initialized');
+      if (!producer || !isConnected) {
+        throw new Error('Kafka producer is disconnected - cannot send message');
       }
 
       // Determine topic based on mode and operation
