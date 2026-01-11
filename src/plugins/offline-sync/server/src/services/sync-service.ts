@@ -319,8 +319,12 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
           const lastSyncedAt = mapping?.updatedAt ? new Date(mapping.updatedAt) : null;
           const lastSyncedBy = mapping?.lastSyncedBy || null;
 
-          // Get current master document
-          const masterDoc = await strapi.documents(contentType).findOne({ documentId: masterDocumentId });
+          // Get current master document (include locale for i18n-aware conflict detection)
+          const findOptions: any = { documentId: masterDocumentId };
+          if (message.locale) {
+            findOptions.locale = message.locale;
+          }
+          const masterDoc = await strapi.documents(contentType).findOne(findOptions);
           const masterUpdatedAt = masterDoc?.updatedAt ? new Date(masterDoc.updatedAt) : null;
 
           // Check if Master was directly edited by admin (using master_edit_log)
@@ -418,11 +422,18 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
           }
 
           // No conflict - apply update and publish
-          await strapi.documents(contentType).update({
+          const updateOptions: any = {
             documentId: masterDocumentId,
             data: cleanedData,
             status: 'published',
-          });
+          };
+
+          // Include locale for i18n support - critical for locale-specific updates
+          if (message.locale) {
+            updateOptions.locale = message.locale;
+          }
+
+          await strapi.documents(contentType).update(updateOptions);
 
           // Update the mapping timestamp and lastSyncedBy (for conflict detection)
           await documentMapping.setMapping(shipId, contentType, replicaDocumentId, masterDocumentId, shipId);
@@ -435,7 +446,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
             editedBy: `ship-${shipId}`,
           });
 
-          strapi.log.info(`[Sync] ✅ Updated ${contentType} (master: ${masterDocumentId})`);
+          strapi.log.info(`[Sync] ✅ Updated ${contentType}${message.locale ? ` [${message.locale}]` : ''} (master: ${masterDocumentId})`);
         }
 
         // Mark message as processed
