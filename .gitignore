@@ -71,6 +71,9 @@ $RECYCLE.BIN/
 *.sqlite
 *.sqlite3
 
+# Exception: Keep offline-sync migration scripts
+!src/plugins/offline-sync/database/migrations/*.sql
+
 
 ############################
 # Misc.
