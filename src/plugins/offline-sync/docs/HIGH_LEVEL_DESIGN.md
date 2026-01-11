@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 1.1 |
-| **Last Updated** | January 2025 |
+| **Version** | 1.2 |
+| **Last Updated** | January 2026 |
 | **Status** | Approved |
 | **Author** | Development Team |
 
@@ -41,6 +41,7 @@ The **Offline Sync Plugin** provides a robust, bi-directional data synchronizati
 - **Automatic synchronization** - Data syncs when connectivity resumes
 - **Conflict detection & resolution** - Handle concurrent edits gracefully
 - **Real-time updates** - Changes propagate instantly when online
+- **Full i18n/Locale support** - Sync locale-specific content independently
 
 ### 1.3 Key Benefits
 
@@ -51,6 +52,7 @@ The **Offline Sync Plugin** provides a robust, bi-directional data synchronizati
 | ⚡ **Real-time Sync** | Instant propagation when connected |
 | 🛡️ **Conflict Management** | Structured approach to handle data conflicts |
 | 📊 **Visibility** | Monitor sync status and ship connectivity |
+| 🌐 **i18n Support** | Full localization support for multi-language content |
 
 ---
 
@@ -70,6 +72,9 @@ The **Offline Sync Plugin** provides a robust, bi-directional data synchronizati
 | FR-08 | System shall support configurable content types for sync | Medium |
 | FR-09 | System shall handle message delivery failures gracefully | Medium |
 | FR-10 | System shall ensure idempotent message processing | High |
+| FR-11 | System shall support locale-specific content sync (i18n) | High |
+| FR-12 | System shall detect new locale additions without false conflicts | High |
+| FR-13 | System shall track edit sources for conflict attribution | Medium |
 
 ### 2.2 Non-Functional Requirements
 
@@ -223,6 +228,9 @@ The solution implements an **Event-Driven Architecture** using Apache Kafka as t
 | **Timestamp-based Conflict Detection** | Simple, reliable conflict detection without distributed clocks |
 | **Admin Conflict Resolution** | Human judgment for complex merge scenarios |
 | **Heartbeat Mechanism** | Track ship connectivity status |
+| **Locale-aware Sync** | Each locale syncs independently, preventing false conflicts |
+| **Master Edit Log** | Track admin edits on master for accurate conflict attribution |
+| **Master Sync Queue** | Queue master changes when Kafka is offline |
 
 ### 4.3 Sync Modes
 
@@ -301,6 +309,8 @@ The solution implements an **Event-Driven Architecture** using Apache Kafka as t
 | **Application** | Sync Queue | Queue operations when offline (replica) |
 | **Application** | Connectivity Monitor | Monitor network connectivity (replica) |
 | **Application** | Version Manager | Track document versions |
+| **Application** | Master Sync Queue | Queue master changes when Kafka offline (master) |
+| **Application** | Master Edit Log | Track direct admin edits for conflict attribution (master) |
 | **Integration** | Kafka Producer | Send messages to topics |
 | **Integration** | Kafka Consumer | Receive messages from topics |
 | **Data** | PostgreSQL | Persistent storage |
@@ -594,7 +604,8 @@ The solution implements an **Event-Driven Architecture** using Apache Kafka as t
 | **Kafka Broker Down** | Health check failure | Failover to other brokers |
 | **Master DB Failure** | Connection error | Failover to standby |
 | **Message Processing Error** | Exception caught | Dead letter queue, retry |
-| **Conflict Detected** | Timestamp comparison (master.updatedAt > mapping.updatedAt) | Admin notification, manual resolution (keep-ship/keep-master/merge) |
+| **Conflict Detected** | Timestamp + edit source comparison | Admin notification, manual resolution (keep-ship/keep-master/merge) |
+| **New Locale Added** | Locale doesn't exist on master | Direct creation, no conflict triggered |
 
 ---
 
@@ -634,6 +645,24 @@ The solution implements an **Event-Driven Architecture** using Apache Kafka as t
 
 ## Changelog
 
+### Version 1.2 (January 2026)
+
+**Updates:**
+- ✅ Added **Full i18n/Locale Support** for multi-language content sync
+- ✅ Added **Locale-aware Conflict Detection** - each locale checked independently
+- ✅ Added **New Locale Detection** - adding new locales bypasses conflict checks
+- ✅ Added **Master Edit Log** service for tracking admin edits (accurate conflict attribution)
+- ✅ Added **Master Sync Queue** service for master-side offline handling
+- ✅ Added **Locale in Create ACK** - proper mapping for locale-specific documents
+- ✅ Updated conflict types: `concurrent-edit` vs `master-admin-edit`
+- ✅ Added `lastSyncedBy` tracking for multi-ship conflict detection
+
+**Key Changes:**
+- Locale-specific content syncs independently (EN and AR don't conflict)
+- Adding a new locale to existing document doesn't trigger false conflicts
+- Conflict detection now identifies source: master admin vs other ships
+- Master can queue changes when Kafka is offline
+
 ### Version 1.1 (January 2025)
 
 **Updates:**
@@ -664,6 +693,9 @@ The solution implements an **Event-Driven Architecture** using Apache Kafka as t
 | **Dead Letter** | Failed message awaiting intervention |
 | **Heartbeat** | Periodic signal indicating system is alive |
 | **Idempotency** | Same operation produces same result if repeated |
+| **Locale** | Language-specific version of content (e.g., EN, AR) |
+| **i18n** | Internationalization - multi-language content support |
+| **New Locale** | A locale that doesn't exist on master for a given document |
 
 ---
 

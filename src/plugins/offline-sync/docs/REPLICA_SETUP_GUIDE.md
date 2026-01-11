@@ -1,5 +1,8 @@
 # 🚢 Strapi Offline Sync - Replica Setup Guide
 
+**Last Updated:** January 2026  
+**Version:** 1.2
+
 This guide will help you set up your system as a **Replica** (Ship) that connects to the Master system for bi-directional data synchronization.
 
 ---
@@ -136,6 +139,7 @@ The system checks connectivity every 30 seconds (configurable). When Kafka comes
 ✅ **Auto-Sync**: When connection restored, all changes sync automatically
 ✅ **No Manual Steps**: Fully automatic - just wait for connection
 ✅ **Bi-Directional**: You also receive updates from master when you reconnect
+✅ **i18n/Locale Support**: Each language version syncs independently
 
 **How it works:**
 - **When offline** (WiFi disconnected, network down, no internet): 
@@ -514,6 +518,21 @@ You should see:
    📥 Received master update: ...
    ```
 3. Check your database - content should appear automatically
+
+### Test 3: i18n/Locale Sync (Multi-Language)
+1. Create content in English (EN) on your replica
+2. Check master logs - should show:
+   ```
+   [Sync] ✅ Created api::article.article [en]: ...
+   ```
+3. Add Arabic (AR) locale to the same content via the locale dropdown
+4. Check master logs - should show:
+   ```
+   [Sync] 🌐 Adding new locale ar to existing api::article.article
+   [Sync] ✅ Added locale ar to api::article.article
+   ```
+5. Verify on master: "Available in" column should show both EN and AR
+6. **Important:** Each locale syncs independently - no conflicts between different languages!
 
 ---
 
@@ -1039,6 +1058,8 @@ If you encounter issues:
 | `📦 Operation queued` | Content saved locally, waiting for sync |
 | `🔄 Connectivity restored` | Kafka connection restored |
 | `📤 Syncing X queued operations` | Automatic sync in progress |
+| `🌐 Adding new locale ar` | New locale being added to existing doc |
+| `✅ Added locale ar` | Locale successfully added |
 
 ### Quick Testing Commands
 
@@ -1081,6 +1102,7 @@ Before contacting support, verify:
 - ❌ You don't need Kafka installed - you're connecting to the master's Kafka!
 - ✅ You only need Node.js and PostgreSQL (can be installed directly)
 - ✅ **Offline capability is built-in** - you can work without internet, changes will sync automatically when connection is restored!
+- ✅ **i18n/Locale support** - create content in multiple languages, each syncs independently
 
 ---
 

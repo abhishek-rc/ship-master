@@ -1,5 +1,8 @@
 # 🌊 How Offline Sync Handles Network Disconnections
 
+**Last Updated:** January 2026  
+**Version:** 1.2
+
 This document explains how the Offline Sync plugin handles scenarios when ships are at sea with **no internet connection** or **intermittent connectivity**.
 
 ---
@@ -14,6 +17,7 @@ This document explains how the Offline Sync plugin handles scenarios when ships 
 - ✅ When connection is restored, changes must **automatically sync** to master
 - ✅ No data loss during offline periods
 - ✅ Conflict resolution when same content is modified on both master and ship
+- ✅ **i18n/Locale support** - different locales sync independently
 
 ---
 
@@ -383,28 +387,46 @@ GET /api/offline-sync/status
 
 ### What is a Conflict?
 
-A conflict occurs when the **same document** is modified on **both master and ship** at different times, and the ship tries to sync its changes.
+A conflict occurs when the **same document AND same locale** is modified on **both master and ship** at different times, and the ship tries to sync its changes.
 
-**Example Scenario:**
+**Example Scenario 1: Same Locale Conflict ⚠️**
 ```
-Day 1: Ship syncs Article #123 (title: "Weather Report")
+Day 1: Ship syncs Article #123 [EN] (title: "Weather Report")
 Day 2: Ship goes offline
-Day 3: Master admin updates Article #123 (title: "Updated Weather Report")
-Day 4: Ship crew updates Article #123 (title: "Ship Weather Report")
+Day 3: Master admin updates Article #123 [EN] (title: "Updated Weather Report")
+Day 4: Ship crew updates Article #123 [EN] (title: "Ship Weather Report")
 Day 5: Ship comes online and tries to sync
-→ CONFLICT DETECTED! ⚠️
+→ CONFLICT DETECTED! ⚠️ (Same locale modified on both sides)
+```
+
+**Example Scenario 2: Different Locales - NO Conflict ✅**
+```
+Day 1: Ship syncs Article #123 [EN] (title: "Weather Report")
+Day 2: Ship goes offline
+Day 3: Master admin adds Article #123 [AR] (title: "تقرير الطقس")
+Day 4: Ship crew updates Article #123 [EN] (title: "Ship Weather Report")
+Day 5: Ship comes online and tries to sync
+→ NO CONFLICT! ✅ (Different locales - they sync independently)
+```
+
+**Example Scenario 3: Adding New Locale - NO Conflict ✅**
+```
+Day 1: Master has Article #123 [EN] only
+Day 2: Ship creates Article #123 [AR] while offline
+Day 5: Ship comes online and tries to sync
+→ NO CONFLICT! ✅ (AR is a NEW locale that doesn't exist on master)
 ```
 
 ---
 
 ### How Conflict Detection Works
 
-The system uses **timestamp-based conflict detection**:
+The system uses **timestamp + source-based conflict detection** with **i18n/locale awareness**:
 
 ```
 ┌─────────────────────────────────────────┐
 │  Ship Sends Update                      │
-│  (Article #123)                         │
+│  (Article #123, locale: AR)             │
 └───────────────┬─────────────────────────┘
                 │
                 ▼
@@ -412,19 +434,38 @@ The system uses **timestamp-based conflict detection**:
 │  1. Get Document Mapping                 │
 │     - Find when ship last synced        │
 │     - lastSyncedAt = mapping.updatedAt   │
+│     - lastSyncedBy = mapping.lastSyncedBy│
 └───────────────┬─────────────────────────┘
                 │
                 ▼
 ┌─────────────────────────────────────────┐
-│  2. Get Master Document                 │
-│     - Get current master document       │
+│  2. Get Master Document (WITH LOCALE!)  │
+│     - Get master doc for SAME locale    │
 │     - masterUpdatedAt = doc.updatedAt   │
+│     - If locale doesn't exist → NEW!    │
 └───────────────┬─────────────────────────┘
                 │
                 ▼
 ┌─────────────────────────────────────────┐
-│  3. Compare Timestamps                  │
-│     IF masterUpdatedAt > lastSyncedAt  │
+│  3. New Locale Check (NO CONFLICT)      │
+│     IF locale exists in message AND     │
+│        master doc for locale is NULL    │
+│     THEN → NEW LOCALE! Apply directly   │
+└───────────────┬─────────────────────────┘
+                │
+                ▼
+┌─────────────────────────────────────────┐
+│  4. Check Master Edit Log               │
+│     - Did master admin edit directly?   │
+│     - editedBy = 'master-admin'?        │
+└───────────────┬─────────────────────────┘
+                │
+                ▼
+┌─────────────────────────────────────────┐
+│  5. Compare Timestamps + Source         │
+│     IF masterUpdatedAt > lastSyncedAt   │
+│        AND (different ship modified     │
+│             OR master admin edited)     │
 │     THEN → CONFLICT!                    │
 │     ELSE → No conflict, apply update    │
 └─────────────────────────────────────────┘
@@ -432,14 +473,29 @@ The system uses **timestamp-based conflict detection**:
 
 **Key Logic:**
 ```typescript
-// Conflict detected if master was modified AFTER last sync
-const hasConflict = masterUpdatedAt > lastSyncedAt;
+// NEW: Check for new locale (no conflict possible)
+const isNewLocale = message.locale && !masterDoc;
+if (isNewLocale) {
+  // Apply directly - adding new locale doesn't conflict
+  return applyUpdate();
+}
+
+// Conflict detected if:
+// 1. Master modified AFTER last sync by DIFFERENT source
+// 2. OR Master admin directly edited
+const masterModifiedAfterSync = masterUpdatedAt > lastSyncedAt;
+const differentSourceModified = lastSyncedBy !== shipId;
+const masterAdminEdited = masterEditLog.editedBy === 'master-admin';
+
+const hasConflict = (masterModifiedAfterSync && differentSourceModified) || masterAdminEdited;
 ```
 
 **Why This Works:**
-- If master was modified **after** ship's last sync, someone edited it while ship was offline
-- Ship's changes would overwrite master's changes → **Conflict!**
-- System prevents data loss by detecting this automatically
+- **Locale-aware:** EN and AR versions are checked independently
+- **New locale:** Adding AR to EN-only document = NO conflict
+- **Multi-ship aware:** Ship A editing after Ship B = CONFLICT
+- **Admin tracking:** Master admin edits are tracked separately
+- System prevents data loss by detecting conflicts automatically
 
 ---
 
@@ -498,9 +554,13 @@ INSERT INTO conflict_logs (
   ship_id,            -- 'ship-001'
   ship_data,          -- Ship's version (JSONB)
   master_data,        -- Master's version (JSONB)
-  conflict_type,      -- 'concurrent-edit'
+  conflict_type,      -- 'concurrent-edit' OR 'master-admin-edit'
   resolved_at         -- NULL (unresolved)
 ) VALUES (...);
+
+-- conflict_type indicates the SOURCE of the conflict:
+-- 'concurrent-edit': Another ship modified the same locale
+-- 'master-admin-edit': Master admin directly edited via admin panel
 ```
 
 **Both versions are preserved:**
@@ -849,6 +909,8 @@ GET /api/offline-sync/conflicts?contentType=article
 | **Missed updates from master** | ✅ Kafka retains messages, ship receives on reconnect |
 | **Conflicts** | ✅ Automatic detection + 3 resolution strategies (keep-ship, keep-master, merge) |
 | **Connection detection** | ✅ Automatic monitoring every 30 seconds |
+| **Multi-language content** | ✅ Each locale syncs independently (i18n support) |
+| **New locale added** | ✅ Automatically applied without conflict checks |
 
 ---
 
@@ -908,24 +970,48 @@ GET /api/offline-sync/conflicts?contentType=article
 **How Conflicts Are Solved:**
 
 1. **Automatic Detection** ✅
-   - Timestamp-based comparison
+   - Timestamp + source-based comparison
    - Detects when master modified after ship's last sync
+   - Locale-aware: only same locale changes can conflict
    - Prevents data loss automatically
 
-2. **Safe Handling** ✅
+2. **New Locale Detection** ✅
+   - Adding a new locale (e.g., AR to EN-only doc) = NO conflict
+   - System detects when locale doesn't exist on master
+   - Applies new locale directly without conflict checks
+
+3. **Safe Handling** ✅
    - Both versions preserved in database
    - Ship's update NOT applied (prevents overwrite)
    - Conflict logged for admin review
+   - Conflict type tracked: `concurrent-edit` vs `master-admin-edit`
 
-3. **Flexible Resolution** ✅
+4. **Flexible Resolution** ✅
    - 3 strategies: keep-ship, keep-master, merge
    - Admin decides based on business rules
    - System applies resolution automatically
 
-4. **Prevention** ✅
+5. **Prevention** ✅
    - Mapping timestamp updated after resolution
+   - `lastSyncedBy` tracks who made last sync
    - Future syncs won't conflict (unless master edits again)
-   - System learns from resolutions
+   - Multi-ship aware: different ships tracked separately
 
-**Result:** Zero data loss, zero corruption, flexible conflict handling! 🛡️
+**Result:** Zero data loss, zero corruption, locale-aware, flexible conflict handling! 🛡️
+
+---
+
+## 🌐 i18n/Locale Sync Summary
+
+**How Locales Are Handled:**
+
+| Scenario | Result | Why |
+|----------|--------|-----|
+| Ship updates EN, master has only EN | ✅ Normal sync | Same locale |
+| Ship adds AR, master has only EN | ✅ AR added directly | New locale, no conflict |
+| Ship updates EN, master admin updated AR | ✅ Both sync | Different locales, independent |
+| Ship updates EN, master admin updated EN | ⚠️ CONFLICT | Same locale, both modified |
+| Ship updates AR, other ship updated AR | ⚠️ CONFLICT | Same locale, different ships |
+
+**Key Principle:** Each locale version is treated as an independent sync unit. Only modifications to the **same locale** can cause conflicts.
 

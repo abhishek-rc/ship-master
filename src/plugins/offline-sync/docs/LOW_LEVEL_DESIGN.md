@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 1.1 |
-| **Last Updated** | January 2025 |
+| **Version** | 1.2 |
+| **Last Updated** | January 2026 |
 | **Platform** | Strapi 5.x |
 | **Message Broker** | Apache Kafka |
 | **Database** | PostgreSQL |
@@ -42,6 +42,8 @@ The Offline Sync Plugin enables bi-directional data synchronization between a ce
 | **Conflict Detection** | Identify concurrent modifications automatically |
 | **Idempotency** | Same message processed exactly once |
 | **Fault Tolerance** | Handle network failures gracefully |
+| **i18n Support** | Each locale syncs independently without false conflicts |
+| **Edit Source Tracking** | Distinguish master admin edits from ship edits |
 
 ### 1.3 System Actors
 
@@ -443,6 +445,44 @@ interface DeadLetter {
 }
 ```
 
+#### 3.1.12 Master Sync Queue (`master-sync-queue.ts`) - Master Only
+
+**Responsibility:** Queue master changes when Kafka is offline and track edit sources.
+
+```typescript
+interface MasterSyncQueue {
+  // Enqueue master operation for later sync (when Kafka offline)
+  enqueue(operation: {
+    contentType: string;
+    documentId: string;
+    operation: 'create' | 'update' | 'delete';
+    data: any;
+    locale?: string;
+  }): Promise<any>;
+  
+  // Dequeue pending operations
+  dequeue(limit: number): Promise<any[]>;
+  
+  // Mark as synced
+  markSynced(queueId: number): Promise<void>;
+  
+  // Log edit for conflict detection
+  logEdit(edit: {
+    contentType: string;
+    documentId: string;
+    operation: string;
+    editedBy: string;  // 'master-admin' | 'ship-{shipId}'
+    locale?: string;
+  }): Promise<void>;
+  
+  // Get last editor for conflict attribution
+  getLastEditor(contentType: string, documentId: string): Promise<{
+    editedBy: string;
+    editedAt: Date;
+  } | null>;
+}
+```
+
 ### 3.2 Data Structures
 
 #### 3.2.1 Sync Message
@@ -457,6 +497,8 @@ interface SyncMessage {
   contentId: string;        // Document ID
   version: number;          // Version number
   data: object | null;      // Document data (null for delete)
+  locale?: string;          // i18n locale (e.g., "en", "ar")
+  masterDocumentId?: string; // Master doc ID (for updates/deletes)
   metadata?: {
     queueId?: number;       // Sync queue ID
   };
@@ -474,7 +516,8 @@ interface ConflictData {
   masterVersion: number;
   shipData: object;
   masterData: object;
-  conflictType: string;
+  conflictType: 'concurrent-edit' | 'master-admin-edit';  // Edit source type
+  locale?: string;          // i18n locale if applicable
 }
 ```
 
@@ -488,6 +531,7 @@ interface DocumentMapping {
   contentType: string;
   replicaDocumentId: string;
   masterDocumentId: string;
+  lastSyncedBy: string;    // 'master' | 'ship-{shipId}' - who made last sync
   createdAt: Date;
   updatedAt: Date;         // Used for conflict detection
 }
@@ -973,29 +1017,62 @@ GET /api/offline-sync/health
    │               │                  │               │             │             │
 ```
 
-### 7.2 Conflict Detection and Resolution (Timestamp-Based)
+### 7.2 Conflict Detection and Resolution (Timestamp + Source-Based)
 
 **Conflict Detection Algorithm:**
 
-The system uses **timestamp-based conflict detection** to identify when the same document has been modified on both master and replica:
+The system uses **timestamp-based conflict detection with edit source tracking** to accurately identify conflicts:
 
 ```typescript
 // When ship sends update to master:
 const mapping = await documentMapping.getMapping(shipId, contentType, replicaDocumentId);
-const lastSyncedAt = mapping?.updatedAt; // When ship last synced this document
+const lastSyncedAt = mapping?.updatedAt;      // When ship last synced
+const lastSyncedBy = mapping?.lastSyncedBy;   // Who made the last sync ('master' | 'ship-X')
 
-const masterDoc = await strapi.documents(contentType).findOne({ documentId: masterDocumentId });
-const masterUpdatedAt = masterDoc?.updatedAt; // When master document was last updated
+// IMPORTANT: Get master doc WITH locale for i18n-aware detection
+const findOptions: any = { documentId: masterDocumentId };
+if (message.locale) {
+  findOptions.locale = message.locale;
+}
+const masterDoc = await strapi.documents(contentType).findOne(findOptions);
+const masterUpdatedAt = masterDoc?.updatedAt;
 
-// Conflict detected if master was modified AFTER ship's last sync
-const hasConflict = lastSyncedAt && masterUpdatedAt && masterUpdatedAt > lastSyncedAt;
+// NEW: Check for new locale (no conflict possible)
+const isNewLocale = message.locale && !masterDoc;
+if (isNewLocale) {
+  // Directly apply - this is adding a new locale, not modifying existing
+  return;
+}
+
+// Check master_edit_log for admin edits
+const masterDirectEdit = await masterSyncQueue.getLastEditor(contentType, masterDocumentId);
+
+// Conflict Detection:
+// Case 1: Master modified after last sync by DIFFERENT ship
+const masterModifiedAfterSync = lastSyncedAt && masterUpdatedAt && masterUpdatedAt > lastSyncedAt;
+const differentShipModified = lastSyncedBy !== shipId;
+
+// Case 2: Master admin directly edited after last sync
+const masterAdminEdited = masterDirectEdit?.editedBy === 'master-admin' &&
+  lastSyncedAt && masterDirectEdit.editedAt > lastSyncedAt;
+
+const hasConflict = (masterModifiedAfterSync && differentShipModified) || masterAdminEdited;
+const conflictType = masterAdminEdited ? 'master-admin-edit' : 'concurrent-edit';
 ```
 
-**Why Timestamp-Based:**
+**i18n/Locale-Aware Conflict Detection:**
+- ✅ Each locale is checked independently
+- ✅ Adding AR locale when EN exists = NO conflict
+- ✅ Updating AR when someone else updated EN = NO conflict
+- ✅ Updating same locale as another recent edit = CONFLICT
+
+**Why Timestamp + Source-Based:**
 - ✅ Simple and reliable (no distributed clocks needed)
 - ✅ Works with standard database timestamps
-- ✅ Accurate conflict detection
+- ✅ Accurate conflict attribution (admin vs ship)
 - ✅ Prevents data loss automatically
+- ✅ Multi-ship aware (tracks which ship made last sync)
+- ✅ Locale-aware (new locales don't conflict)
 
 **Conflict Resolution Strategies:**
 
@@ -1005,6 +1082,7 @@ const hasConflict = lastSyncedAt && masterUpdatedAt && masterUpdatedAt > lastSyn
 
 **After Resolution:**
 - Mapping timestamp is updated (`mapping.updatedAt = now()`)
+- lastSyncedBy is updated to reflect who resolved
 - Future syncs won't conflict (unless master edits again)
 
 ```
@@ -1193,6 +1271,26 @@ const SENSITIVE_FIELDS = [
 
 ## Changelog
 
+### Version 1.2 (January 2026)
+
+**Updates:**
+- ✅ Added **Full i18n/Locale Support** in SyncMessage and data flows
+- ✅ Added **Master Sync Queue** service interface (`master-sync-queue.ts`)
+- ✅ Added **Master Edit Log** for tracking admin edits and conflict attribution
+- ✅ Added **Locale-aware Conflict Detection** - each locale checked independently
+- ✅ Added **New Locale Detection** - bypasses conflict checks for new locales
+- ✅ Updated **SyncMessage** with `locale` and `masterDocumentId` fields
+- ✅ Updated **ConflictData** with `conflictType` enum and `locale` field
+- ✅ Updated **DocumentMapping** with `lastSyncedBy` field for multi-ship tracking
+- ✅ Enhanced conflict detection algorithm with source tracking
+
+**Key Changes:**
+- Locale-aware sync: EN and AR versions don't conflict with each other
+- New locale detection: Adding AR to EN-only document doesn't conflict
+- Conflict types: `concurrent-edit` vs `master-admin-edit`
+- Edit source tracking: `lastSyncedBy` field tracks which ship made last sync
+- Master offline handling: master_sync_queue for Kafka outages
+
 ### Version 1.1 (January 2025)
 
 **Updates:**
@@ -1226,6 +1324,10 @@ const SENSITIVE_FIELDS = [
 | **Conflict** | When same document is modified on both master and replica |
 | **Dead Letter** | Failed message awaiting manual intervention |
 | **Idempotency** | Guarantee that same message is processed exactly once |
+| **Locale** | Language-specific version of content (e.g., en, ar, fr) |
+| **New Locale** | A locale that doesn't exist on master for a given document |
+| **lastSyncedBy** | Track who made the last sync (master or specific ship) |
+| **Master Edit Log** | Table tracking direct admin edits on master for conflict attribution |
 
 ---
 

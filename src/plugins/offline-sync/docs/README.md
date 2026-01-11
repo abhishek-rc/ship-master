@@ -1,5 +1,8 @@
 # 📚 Offline Sync Plugin Documentation
 
+**Last Updated:** January 2026  
+**Version:** 1.2
+
 Welcome to the Offline Sync Plugin documentation! This directory contains all documentation related to the plugin.
 
 ---
@@ -32,7 +35,9 @@ Welcome to the Offline Sync Plugin documentation! This directory contains all do
   - Offline-first architecture
   - Sync queue mechanism
   - Connectivity monitoring
-  - Conflict detection & resolution
+  - Conflict detection & resolution (timestamp + source-based)
+  - **i18n/Locale-aware sync** (NEW in v1.2)
+  - New locale detection (no false conflicts)
   - Real-world examples
 
 ### 🏗️ Technical Design
@@ -161,5 +166,16 @@ Welcome to the Offline Sync Plugin documentation! This directory contains all do
 
 ---
 
-**Last Updated:** 2024
+**Last Updated:** January 2026
+
+---
+
+## 🆕 What's New in v1.2
+
+- **Full i18n/Locale Support** - Each language version syncs independently
+- **Locale-aware Conflict Detection** - No false conflicts between different languages
+- **New Locale Detection** - Adding a new locale bypasses conflict checks
+- **Master Edit Log** - Tracks admin edits for accurate conflict attribution
+- **lastSyncedBy Tracking** - Multi-ship conflict detection improvement
+- **Master Sync Queue** - Master can queue changes when Kafka is offline
 

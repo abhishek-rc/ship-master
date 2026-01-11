@@ -1,5 +1,8 @@
 # 🚢 Production Deployment Guide
 
+**Last Updated:** January 2026  
+**Version:** 1.2
+
 This guide explains how to deploy the Offline Sync system in production, where ships at sea connect to the master over the **internet** (not the same local network).
 
 ---
@@ -584,8 +587,18 @@ kafka-broker-api-versions --bootstrap-server <MASTER_PUBLIC_IP>:9092
 
 **The system works the same way** - ships connect to master's Kafka, work offline when internet is down, and auto-sync when connection is restored!
 
+**New Features:**
+- ✅ Full i18n/locale support - each language syncs independently
+- ✅ Locale-aware conflict detection - no false conflicts between different languages
+- ✅ Master edit tracking - conflicts correctly attributed to admin vs ship edits
+
 ---
 
-**Last Updated:** 2024
-**Version:** 1.0
+**Last Updated:** January 2026
+**Version:** 1.2
+
+**New in v1.2:**
+- ✅ Full i18n/locale support for multi-language content
+- ✅ Locale-aware conflict detection
+- ✅ Master edit tracking for accurate conflict attribution
 

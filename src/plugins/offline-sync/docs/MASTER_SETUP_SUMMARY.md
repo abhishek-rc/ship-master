@@ -1,5 +1,8 @@
 # 🎯 Master Setup Summary (For Your Reference)
 
+**Last Updated:** January 2026  
+**Version:** 1.2
+
 Quick reference for setting up your system as Master.
 
 ## 🌐 Network Requirements
@@ -57,6 +60,8 @@ Quick reference for setting up your system as Master.
 - ✅ Your friend connects to YOUR Kafka (no Kafka needed on their side)
 - ✅ Port 9092 must be accessible from network
 - ⚠️ **Kafka MUST be running for sync to work** - it's the communication channel
+- ✅ Full i18n/locale support - each language syncs independently
+- ✅ Master edit tracking - conflicts are attributed correctly (admin vs ship)
 
 ---
 
@@ -275,6 +280,11 @@ Look for:
 You should see:
 - `💓 Heartbeat from ship-001 - online`
 - `[ShipTracker] ✅ New ship registered: ship-001`
+
+### When Locale-Specific Content Syncs
+You should see:
+- `[Sync] 🌐 Adding new locale ar to existing api::article.article`
+- `[Sync] ✅ Updated api::article.article [ar] (master: xyz123)`
 
 ---
 
