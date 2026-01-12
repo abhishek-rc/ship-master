@@ -111,7 +111,17 @@ export default {
             },
             region: {
               type: 'string',
-              description: 'OSS region',
+              description: 'OSS region (e.g., oss-cn-hangzhou)',
+            },
+            uploadPath: {
+              type: 'string',
+              default: '',
+              description: 'Upload path prefix in OSS (e.g., strapi-uploads)',
+            },
+            pathStyle: {
+              type: 'boolean',
+              default: false,
+              description: 'Use path-style URLs (set false for Alibaba OSS)',
             },
           },
         },

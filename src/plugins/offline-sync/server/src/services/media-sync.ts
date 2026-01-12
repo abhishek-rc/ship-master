@@ -24,6 +24,8 @@ interface MediaConfig {
     bucket: string;
     baseUrl: string;
     region?: string;
+    uploadPath?: string;  // Path prefix for uploads (e.g., 'strapi-uploads')
+    pathStyle?: boolean;  // Use path-style URLs (false for Alibaba OSS)
   };
   minio: {
     endPoint: string;
@@ -93,7 +95,9 @@ export default ({ strapi }: { strapi: any }) => {
         secretKey: config.media.oss?.secretKey || '',
         bucket: config.media.oss?.bucket || '',
         baseUrl: config.media.oss?.baseUrl || '',
-        region: config.media.oss?.region,
+        region: config.media.oss?.region || '',
+        uploadPath: config.media.oss?.uploadPath || '',  // Path prefix (e.g., 'strapi-uploads')
+        pathStyle: config.media.oss?.pathStyle === true,  // Default false for Alibaba OSS
       },
       minio: {
         endPoint: config.media.minio?.endPoint || 'localhost',
@@ -123,16 +127,28 @@ export default ({ strapi }: { strapi: any }) => {
     try {
       // Initialize OSS client (Alibaba OSS is S3-compatible)
       if (config.oss.endPoint && config.oss.accessKey) {
+        const ossEndpoint = config.oss.endPoint.replace(/^https?:\/\//, '');
+        
+        // For Alibaba OSS, region should match endpoint (e.g., oss-cn-hangzhou)
+        const ossRegion = config.oss.region || ossEndpoint.split('.')[0] || 'oss-cn-hangzhou';
+        
         ossClient = new MinioClient({
-          endPoint: config.oss.endPoint.replace(/^https?:\/\//, ''),
+          endPoint: ossEndpoint,
           port: config.oss.port,
           useSSL: config.oss.useSSL,
           accessKey: config.oss.accessKey,
           secretKey: config.oss.secretKey,
-          region: config.oss.region || 'us-east-1',
-          pathStyle: true,
+          region: ossRegion,
+          pathStyle: config.oss.pathStyle,  // false for Alibaba OSS (virtual-hosted style)
         });
-        strapi.log.info('[MediaSync] OSS client initialized');
+        
+        strapi.log.info(`[MediaSync] OSS client initialized`);
+        strapi.log.info(`[MediaSync]   Endpoint: ${ossEndpoint}`);
+        strapi.log.info(`[MediaSync]   Bucket: ${config.oss.bucket}`);
+        strapi.log.info(`[MediaSync]   Region: ${ossRegion}`);
+        strapi.log.info(`[MediaSync]   Upload Path: ${config.oss.uploadPath || '(root)'}`);
+      } else {
+        strapi.log.warn('[MediaSync] OSS client not initialized - missing endpoint or accessKey');
       }
 
       // Initialize local MinIO client
@@ -250,44 +266,88 @@ export default ({ strapi }: { strapi: any }) => {
 
     const startTime = Date.now();
     let processed = 0;
+    let listed = 0;
 
     try {
       strapi.log.info('[MediaSync] Starting media sync from OSS to MinIO...');
 
-      // Ensure bucket exists
+      // Ensure MinIO bucket exists
       await ensureBucket();
 
-      // List all objects in OSS bucket
-      const objectsStream = ossClient.listObjects(config.oss.bucket, '', true);
+      // Use uploadPath as prefix when listing (e.g., 'strapi-uploads/')
+      const prefix = config.oss.uploadPath 
+        ? (config.oss.uploadPath.endsWith('/') ? config.oss.uploadPath : config.oss.uploadPath + '/')
+        : '';
+      
+      strapi.log.info(`[MediaSync] Listing files from OSS bucket: ${config.oss.bucket}`);
+      strapi.log.info(`[MediaSync] Using prefix: "${prefix || '(root)'}"`);
+
+      // First, try to verify OSS connection
+      try {
+        const bucketExists = await ossClient.bucketExists(config.oss.bucket);
+        if (!bucketExists) {
+          strapi.log.error(`[MediaSync] OSS bucket "${config.oss.bucket}" does not exist or is not accessible`);
+          syncStats.error = `Bucket "${config.oss.bucket}" not found`;
+          return;
+        }
+        strapi.log.info(`[MediaSync] ✅ OSS bucket "${config.oss.bucket}" is accessible`);
+      } catch (bucketError: any) {
+        strapi.log.error(`[MediaSync] Failed to check OSS bucket: ${bucketError.message}`);
+        syncStats.error = bucketError.message;
+        return;
+      }
+
+      // List all objects in OSS bucket with prefix
+      const objectsStream = ossClient.listObjects(config.oss.bucket, prefix, true);
 
       for await (const obj of objectsStream) {
+        listed++;
+        
         if (!obj.name) continue;
+
+        // Log first few files for debugging
+        if (listed <= 5) {
+          strapi.log.debug(`[MediaSync] Found file: ${obj.name} (${obj.size} bytes)`);
+        }
 
         processed++;
 
         // Check if file already exists in MinIO
         const exists = await fileExistsInMinio(obj.name);
         if (exists) {
-          // TODO: Could add size/etag comparison for updates
           syncStats.filesSkipped++;
           continue;
         }
 
         // Sync file
-        await syncFile(obj.name);
+        const success = await syncFile(obj.name);
+        if (success && processed <= 10) {
+          strapi.log.debug(`[MediaSync] ✅ Downloaded: ${obj.name}`);
+        }
 
         // Log progress every 100 files
         if (processed % 100 === 0) {
-          strapi.log.info(`[MediaSync] Progress: ${processed} files processed`);
+          strapi.log.info(`[MediaSync] Progress: ${processed} files processed (${syncStats.filesDownloaded} downloaded, ${syncStats.filesSkipped} skipped)`);
         }
       }
 
       const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-      strapi.log.info(`[MediaSync] ✅ Sync completed in ${duration}s - Downloaded: ${syncStats.filesDownloaded}, Skipped: ${syncStats.filesSkipped}, Failed: ${syncStats.filesFailed}`);
+      
+      if (listed === 0) {
+        strapi.log.warn(`[MediaSync] ⚠️ No files found in OSS bucket with prefix "${prefix}"`);
+        strapi.log.warn(`[MediaSync] Check if uploadPath is correct in your config`);
+      } else {
+        strapi.log.info(`[MediaSync] ✅ Sync completed in ${duration}s`);
+        strapi.log.info(`[MediaSync]   Files listed: ${listed}`);
+        strapi.log.info(`[MediaSync]   Downloaded: ${syncStats.filesDownloaded}`);
+        strapi.log.info(`[MediaSync]   Skipped (already exists): ${syncStats.filesSkipped}`);
+        strapi.log.info(`[MediaSync]   Failed: ${syncStats.filesFailed}`);
+      }
 
       syncStats.lastSyncAt = new Date();
     } catch (error: any) {
       strapi.log.error(`[MediaSync] Sync failed: ${error.message}`);
+      strapi.log.error(`[MediaSync] Error details: ${error.stack || error}`);
       syncStats.error = error.message;
     } finally {
       isSyncing = false;

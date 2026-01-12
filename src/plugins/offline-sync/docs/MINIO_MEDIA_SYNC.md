@@ -116,6 +116,8 @@ export default ({ env }) => ({
           bucket: env('OSS_BUCKET'),
           baseUrl: env('OSS_BASE_URL', 'https://your-bucket.oss-cn-hangzhou.aliyuncs.com'),
           region: env('OSS_REGION', 'oss-cn-hangzhou'),
+          uploadPath: env('OSS_UPLOAD_PATH', 'strapi-uploads'),  // ← Important! Must match your OSS path
+          pathStyle: false,  // false for Alibaba OSS (uses virtual-hosted style)
         },
         
         // MinIO (Local) configuration
@@ -134,6 +136,9 @@ export default ({ env }) => ({
 });
 ```
 
+**Important:** The `uploadPath` must match the path where your Master Strapi stores files in OSS.
+Check your master's upload config for `uploadPath` value (usually `strapi-uploads`).
+
 ### Step 3: Add Environment Variables
 
 Add to `.env` on the replica:
@@ -146,6 +151,7 @@ OSS_SECRET_KEY=your-oss-secret-key
 OSS_BUCKET=your-oss-bucket
 OSS_BASE_URL=https://your-bucket.oss-cn-hangzhou.aliyuncs.com
 OSS_REGION=oss-cn-hangzhou
+OSS_UPLOAD_PATH=strapi-uploads   # ← Must match Master's upload path!
 
 # MinIO Configuration (Local destination)
 MINIO_ENDPOINT=localhost
@@ -155,6 +161,8 @@ MINIO_SECRET_KEY=minioadmin123
 MINIO_BUCKET=media
 MINIO_BASE_URL=http://localhost:9000/media
 ```
+
+**Note:** Check your Master's `config/plugins.ts` for the `uploadPath` value. It's usually `strapi-uploads`.
 
 ### Step 4: Install Dependencies
 
@@ -179,9 +187,12 @@ npm run develop
 | `media.transformUrls` | boolean | `true` | Transform URLs in synced content |
 | `media.syncOnStartup` | boolean | `true` | Run sync when Strapi starts |
 | `media.syncInterval` | number | `300000` | Sync interval in ms (5 min) |
-| `media.oss.endPoint` | string | - | OSS endpoint (without https://) |
+| `media.oss.endPoint` | string | - | OSS endpoint (e.g., `oss-cn-hangzhou.aliyuncs.com`) |
 | `media.oss.bucket` | string | - | OSS bucket name |
 | `media.oss.baseUrl` | string | - | Full URL for OSS media |
+| `media.oss.region` | string | - | OSS region (e.g., `oss-cn-hangzhou`) |
+| `media.oss.uploadPath` | string | `''` | **Important!** Path prefix in OSS (e.g., `strapi-uploads`) |
+| `media.oss.pathStyle` | boolean | `false` | Use path-style URLs (false for Alibaba OSS) |
 | `media.minio.endPoint` | string | `localhost` | MinIO host |
 | `media.minio.port` | number | `9000` | MinIO port |
 | `media.minio.bucket` | string | `media` | MinIO bucket name |
