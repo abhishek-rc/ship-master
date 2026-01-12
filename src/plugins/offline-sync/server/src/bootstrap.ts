@@ -167,6 +167,25 @@ export default ({ strapi }: { strapi: any }) => {
       }
     });
 
+    // Initialize Media Sync (OSS → MinIO) if enabled
+    const mediaSync = strapi.plugin('offline-sync').service('media-sync');
+    if (mediaSync.isEnabled()) {
+      strapi.log.info('[OfflineSync] 🖼️ Media sync enabled');
+      mediaSync.initialize().catch((error: any) => {
+        strapi.log.warn(`[OfflineSync] Media sync initialization deferred: ${error.message}`);
+      });
+
+      // Add media sync shutdown to cleanup
+      cleanupFunctions.push(async () => {
+        try {
+          await mediaSync.shutdown();
+          strapi.log.info('[OfflineSync] Media sync stopped');
+        } catch (e) {
+          // Ignore shutdown errors
+        }
+      });
+    }
+
     // Start connectivity monitoring
     const connectivityMonitor = strapi.plugin('offline-sync').service('connectivity-monitor');
     connectivityMonitor.startMonitoring(pluginConfig.sync.connectivityCheckInterval);

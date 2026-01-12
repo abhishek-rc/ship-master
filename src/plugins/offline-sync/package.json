@@ -25,6 +25,7 @@
     "kind": "plugin"
   },
   "dependencies": {
-    "kafkajs": "^2.2.4"
+    "kafkajs": "^2.2.4",
+    "minio": "^8.0.2"
   }
 }

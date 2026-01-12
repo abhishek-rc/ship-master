@@ -181,7 +181,13 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
         }
 
         // Clean data - remove internal fields
-        const cleanedData = this.cleanSyncData(data || {});
+        let cleanedData = this.cleanSyncData(data || {});
+
+        // Transform media URLs from replica (MinIO) to master (OSS)
+        const mediaSync = strapi.plugin('offline-sync').service('media-sync');
+        if (mediaSync.isEnabled()) {
+          cleanedData = mediaSync.transformToMaster(cleanedData);
+        }
 
         // Get master documentId - first check if provided in message, then lookup from mapping
         let masterDocumentId: string | null = null;
@@ -555,7 +561,23 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
         }
 
         // Clean data - remove internal fields
-        const cleanedData = this.cleanSyncData(data || {});
+        let cleanedData = this.cleanSyncData(data || {});
+
+        // On-demand media sync: Download images BEFORE transforming URLs
+        // This ensures images are available in MinIO when content is displayed
+        const mediaSync = strapi.plugin('offline-sync').service('media-sync');
+        if (mediaSync.isEnabled()) {
+          // Sync media files referenced in this content (non-blocking but awaited)
+          try {
+            await mediaSync.syncContentMedia(data);
+          } catch (mediaSyncError: any) {
+            // Non-critical: log but continue with content sync
+            strapi.log.debug(`[Sync] Media sync skipped: ${mediaSyncError.message}`);
+          }
+
+          // Transform media URLs from master (OSS) to replica (MinIO)
+          cleanedData = mediaSync.transformToReplica(cleanedData);
+        }
 
         // Check if we have a local copy of this master document
         // (reverse lookup: find local doc mapped to this master doc)

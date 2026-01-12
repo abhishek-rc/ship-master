@@ -76,4 +76,23 @@ export default ({ env }) => ({
       },
     },
   },
+
+  // media: {
+  //   enabled: true,
+  //   oss: {
+  //     endPoint: 'oss-cn-hangzhou.aliyuncs.com',
+  //     accessKey: env('OSS_ACCESS_KEY'),
+  //     secretKey: env('OSS_SECRET_KEY'),
+  //     bucket: env('OSS_BUCKET'),
+  //     baseUrl: 'https://your-bucket.oss-cn-hangzhou.aliyuncs.com',
+  //   },
+  //   minio: {
+  //     endPoint: 'localhost',
+  //     port: 9000,
+  //     accessKey: 'minioadmin',
+  //     secretKey: 'minioadmin123',
+  //     bucket: 'media',
+  //     baseUrl: 'http://localhost:9000/media',
+  //   },
+  // }
 });

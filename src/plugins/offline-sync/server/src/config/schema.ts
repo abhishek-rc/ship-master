@@ -53,6 +53,116 @@ export default {
       items: { type: 'string' },
       default: [],
     },
+    // Media sync configuration (OSS to MinIO)
+    media: {
+      type: 'object',
+      properties: {
+        enabled: {
+          type: 'boolean',
+          default: false,
+          description: 'Enable media sync between OSS and MinIO',
+        },
+        transformUrls: {
+          type: 'boolean',
+          default: true,
+          description: 'Transform media URLs during content sync',
+        },
+        syncOnStartup: {
+          type: 'boolean',
+          default: true,
+          description: 'Run media sync when Strapi starts',
+        },
+        syncInterval: {
+          type: 'integer',
+          default: 300000,
+          description: 'Interval for periodic sync in milliseconds (default: 5 minutes)',
+        },
+        // OSS (Master) configuration
+        oss: {
+          type: 'object',
+          properties: {
+            endPoint: {
+              type: 'string',
+              description: 'OSS endpoint (e.g., oss-cn-hangzhou.aliyuncs.com)',
+            },
+            port: {
+              type: 'integer',
+              default: 443,
+            },
+            useSSL: {
+              type: 'boolean',
+              default: true,
+            },
+            accessKey: {
+              type: 'string',
+              description: 'OSS Access Key ID',
+            },
+            secretKey: {
+              type: 'string',
+              description: 'OSS Access Key Secret',
+            },
+            bucket: {
+              type: 'string',
+              description: 'OSS bucket name',
+            },
+            baseUrl: {
+              type: 'string',
+              description: 'Base URL for OSS (e.g., https://bucket.oss-cn-hangzhou.aliyuncs.com)',
+            },
+            region: {
+              type: 'string',
+              description: 'OSS region',
+            },
+          },
+        },
+        // MinIO (Replica) configuration
+        minio: {
+          type: 'object',
+          properties: {
+            endPoint: {
+              type: 'string',
+              default: 'localhost',
+              description: 'MinIO endpoint',
+            },
+            port: {
+              type: 'integer',
+              default: 9000,
+            },
+            useSSL: {
+              type: 'boolean',
+              default: false,
+            },
+            accessKey: {
+              type: 'string',
+              default: 'minioadmin',
+              description: 'MinIO access key',
+            },
+            secretKey: {
+              type: 'string',
+              default: 'minioadmin',
+              description: 'MinIO secret key',
+            },
+            bucket: {
+              type: 'string',
+              default: 'media',
+              description: 'MinIO bucket name',
+            },
+            baseUrl: {
+              type: 'string',
+              default: 'http://localhost:9000/media',
+              description: 'Base URL for MinIO',
+            },
+          },
+        },
+        // Fields to scan for media URLs
+        mediaFields: {
+          type: 'array',
+          items: { type: 'string' },
+          default: ['url', 'src', 'href', 'image', 'thumbnail', 'video', 'file'],
+          description: 'Field names that may contain media URLs',
+        },
+      },
+    },
   },
 };
 

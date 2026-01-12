@@ -11,6 +11,7 @@ import deadLetter from './dead-letter';
 import documentMapping from './document-mapping';
 import initialSync from './initial-sync';
 import masterSyncQueue from './master-sync-queue';
+import mediaSync from './media-sync';
 
 export default {
   'sync-queue': syncQueue,
@@ -26,5 +27,6 @@ export default {
   'document-mapping': documentMapping,
   'initial-sync': initialSync,
   'master-sync-queue': masterSyncQueue,
+  'media-sync': mediaSync,
 };
 
