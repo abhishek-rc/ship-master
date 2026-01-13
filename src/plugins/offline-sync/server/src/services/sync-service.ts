@@ -16,6 +16,7 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
       const syncQueue = strapi.plugin('offline-sync').service('sync-queue');
       const kafkaProducer = strapi.plugin('offline-sync').service('kafka-producer');
       const documentMapping = strapi.plugin('offline-sync').service('document-mapping');
+      const mediaSync = strapi.plugin('offline-sync').service('media-sync');
 
       let pushed = 0;
       let failed = 0;
@@ -28,6 +29,25 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
 
         for (const operation of pending) {
           try {
+            let operationData = operation.data;
+            let fileRecords: any[] = [];
+
+            // If media sync is enabled, prepare media files for push
+            // This uploads files from MinIO to OSS and collects file records
+            if (mediaSync.isEnabled() && operationData && operation.operation !== 'delete') {
+              try {
+                const mediaPrep = await mediaSync.prepareContentForMasterPush(operationData);
+                fileRecords = mediaPrep.fileRecords;
+
+                if (mediaPrep.fileSyncResult.failed > 0) {
+                  strapi.log.warn(`[Push] ${mediaPrep.fileSyncResult.failed} media files failed to sync to OSS`);
+                }
+              } catch (mediaPrepError: any) {
+                strapi.log.warn(`[Push] Media preparation failed: ${mediaPrepError.message}`);
+                // Continue without media - content might still sync
+              }
+            }
+
             const message: any = {
               messageId: `msg-${Date.now()}-${operation.id}`,
               shipId: config.shipId,
@@ -36,11 +56,17 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
               contentType: operation.content_type,
               contentId: operation.content_id,
               version: operation.local_version,
-              data: operation.data,
+              data: operationData,
               metadata: {
                 queueId: operation.id,
               },
             };
+
+            // Include file records if any (for master to create file entries)
+            if (fileRecords.length > 0) {
+              message.fileRecords = fileRecords;
+              strapi.log.info(`[Push] Including ${fileRecords.length} file records in message`);
+            }
 
             // Include locale if present (for i18n support)
             if (operation.locale) {
@@ -185,6 +211,27 @@ export default ({ strapi: strapiInstance }: { strapi: any }) => {
 
         // Transform media URLs from replica (MinIO) to master (OSS)
         const mediaSync = strapi.plugin('offline-sync').service('media-sync');
+
+        // IMPORTANT: Process file records FIRST before content
+        // This creates the plugin::upload.file entries that content may reference
+        let fileIdMapping = new Map<number, number>();
+        if (message.fileRecords && message.fileRecords.length > 0) {
+          strapi.log.info(`[Sync] 📥 Processing ${message.fileRecords.length} file records from replica...`);
+          try {
+            fileIdMapping = await mediaSync.processReplicaFileRecords(message.fileRecords);
+
+            // Update content data with new file IDs
+            if (fileIdMapping.size > 0) {
+              cleanedData = mediaSync.updateContentFileIds(cleanedData, fileIdMapping);
+              strapi.log.info(`[Sync] ✅ Updated content with ${fileIdMapping.size} file ID mappings`);
+            }
+          } catch (fileRecordError: any) {
+            strapi.log.error(`[Sync] Failed to process file records: ${fileRecordError.message}`);
+            // Continue anyway - content might still be valid without media
+          }
+        }
+
+        // Transform remaining media URLs from replica (MinIO) to master (OSS)
         if (mediaSync.isEnabled()) {
           cleanedData = mediaSync.transformToMaster(cleanedData);
         }

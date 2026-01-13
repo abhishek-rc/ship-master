@@ -41,14 +41,14 @@ export default ({ env }) => ({
         debounceMs: env.int('SYNC_DEBOUNCE_MS', 1000), // Debounce instant push (prevents spam)
       },
       contentTypes: env('SYNC_CONTENT_TYPES', '').split(',').filter(Boolean),
-      
+
       // Media sync configuration (OSS → MinIO) - Only active on replica!
       media: {
         enabled: env('SYNC_MODE', 'replica') === 'replica',  // Auto-enable only on replica
         transformUrls: true,
         syncOnStartup: true,
         syncInterval: 300000, // 5 minutes
-        
+
         // OSS (Master) configuration
         oss: {
           endPoint: env('OSS_REGION', 'oss-cn-hangzhou') + '.aliyuncs.com',
@@ -62,7 +62,7 @@ export default ({ env }) => ({
           uploadPath: env('OSS_UPLOAD_PATH', 'strapi-uploads'),
           pathStyle: false,
         },
-        
+
         // MinIO (Local) configuration
         minio: {
           endPoint: env('MINIO_ENDPOINT', 'localhost'),
